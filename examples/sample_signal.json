@@ -1,0 +1,41 @@
+{
+  "symbol": "CME_MINI:NQ1!",
+  "timeframe": "5",
+  "packet_time": "2026-08-03T13:50:00Z",
+  "event": "STOP_ORDER_PLACED",
+  "decision": "TAKE",
+  "side": "LONG",
+  "confidence": 66,
+  "order": {
+    "type": "BUY_STOP",
+    "price": 21116.6,
+    "fill_condition": "Fill only after a later candle dips back first (rubber band). Cancel if a 5m candle closes back below 21112.6 or after 6 candles."
+  },
+  "stop": 21098.6,
+  "take_profit_1r": 21134.6,
+  "target": 21140.1,
+  "risk_reward_target": 1.31,
+  "position_size": 1,
+  "position_unit": "MNQ contracts",
+  "risk_amount": 36.0,
+  "manage": "At 21134.6 (1R) move the stop to 21116.6 and close half. The rest targets the 1H ceiling at 21140.1.",
+  "checklist": {
+    "story": "PASS: yesterday's daily and the last 4H candle are both green, bias BUY only",
+    "zone": "PASS: inside a clean zone, 54% between the daily floor and ceiling, not blocked today",
+    "strat": "PASS so far: 14-candle range with a liquidity grab, strong breakout candle (86% body, 43% of the range). Rubber band still pending"
+  },
+  "plain_english": "Both candles say buy. Price paused for 14 candles, sellers got trapped under the range, and one strong candle closed above it. A buy stop sits at 21116.6, but it only counts if price dips back first.",
+  "reasons": [
+    "Story: daily and 4H candles agree, BUY only",
+    "Zone: mid-range between the daily floor 18890.6 and ceiling 22993.9, inside a clean zone",
+    "Strat: wide range with a liquidity grab and a convincing breakout candle at the NYSE open"
+  ],
+  "concerns": [
+    "The daily staircase points down, so this buy follows the two candles against the bigger structure",
+    "The 1H ceiling at 21140.1 is only 1.31R away, so the runner has little room",
+    "No dip yet: if the next candle breaks 21116.6 without a wick, the setup is skipped"
+  ],
+  "invalidation": "A 5m close back below 21112.6 before the fill, or a trade through 21098.6 after it",
+  "why_this_could_fail": "The breakout could be a fake-out into the 1H ceiling at 21140.1. With the daily staircase pointing down, sellers may defend that level.",
+  "next_check": "Next packet: ENTRY (manage the trade), STOP_ORDER_CANCELLED (stand down) or SESSION_BIAS for the next session"
+}

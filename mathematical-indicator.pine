@@ -1,7 +1,7 @@
-// This source code is released under the MIT License: https://opensource.org/licenses/MIT
+//@version=6
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 //  THE MATHEMATICAL INDICATOR  ·  2-CANDLE BIAS STRATEGY
-//  Story → Zone → Strat  |  Pine Script® v6  |  Overlay
+//  Story → Zone → Strat  |  Pine Script® v6  |  Overlay  |  MIT License
 //  https://github.com/roan-maverick/tradingview-mathematical-indicator
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 //
@@ -18,7 +18,7 @@
 //   3. STRAT   Inside the first hour of a session: price pauses (a range with at least two opposite
 //              candles), one strong candle closes outside it (never bigger than half the range),
 //              the next candle dips back (the "rubber band" wick), then a stop order at the breakout
-//              candle's high (low for sells) fires the entry. Stop loss under the breakout candle.
+//              candle's high (low for sells) fires the entry. Stop loss beyond the breakout candle.
 //   4. EXIT    1:1 first. At 1R the stop moves to breakeven (part of the trade can be closed there),
 //              the rest rides to the next level. If price runs too fast in a straight line, take it.
 //
@@ -28,14 +28,15 @@
 //     (expr[1] + lookahead_on): nothing repaints.
 //   • Entries are simulated from OHLC: a stop order fills when a later candle trades through it.
 //     When the rubber band wick and the break happen in the same candle, the dip is assumed first.
-//   • The on-chart record is this chart's history, no fees or slippage. Past results are not a
-//     promise of future results.
+//   • The on-chart record is this chart's history, no fees or slippage.
 //   • Built for 5 to 15 minute charts on futures, forex, gold, indices and crypto.
+//
+//  HOW TO INSTALL: in the Pine Editor press Ctrl+A (Cmd+A on Mac) and delete the default code
+//  FIRST, then paste this whole file. A script can only hold one indicator() declaration.
 //
 //  For education and research. Not financial advice.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 
-//@version=6
 indicator("The Mathematical Indicator · 2-Candle Bias", shorttitle = "MATH", overlay = true, max_labels_count = 500, max_boxes_count = 500, max_lines_count = 500, max_bars_back = 150)
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -53,13 +54,16 @@ const string G_TRG = "③ 08 · Strat · The Trigger"
 const string G_EXT = "④ 09 · Exits"
 const string G_VIS = "✨ 10 · Visuals"
 const string G_DSH = "📊 11 · Dashboard"
-const string G_BOT = "🤖 12 · 24/7 Bot (JSON alerts)"
+const string G_BOT = "🤖 12 · AI Agent Packet (JSON alerts)"
 
 const string TIE_STORY = "Tell the story: daily level → weekly staircase → daily candle"
 const string TIE_DAILY = "Daily candle wins"
 const string TIE_SKIP  = "Stand aside"
 const string EX_LEVEL  = "1R → breakeven, rest to the next level"
 const string EX_1R     = "1:1 only"
+const string PK_EVENTS = "Setups and trade updates"
+const string PK_EVERY  = "Every bar close"
+const string PK_OFF    = "Off"
 
 // ── 00 General
 bool   glowOn        = input.bool(true, "Neon glow", group = G_GEN, display = display.none)
@@ -106,13 +110,13 @@ int    stairLen      = input.int(2, "Staircase swing strength", minval = 1, maxv
 string tieMode       = input.string(TIE_STORY, "When the 2 candles disagree (MIXED)", options = [TIE_STORY, TIE_DAILY, TIE_SKIP], group = G_BIA, display = display.none, tooltip = "Story: at a daily ceiling → SELL, at a daily floor → BUY, otherwise follow the weekly staircase, and if the weekly is a box the daily candle wins (it is the stronger candle).")
 
 // ── 04 Floors and ceilings (support and resistance on candle bodies)
-bool   lvlD          = input.bool(true, "Daily", inline = "l1", group = G_LVL, display = display.none)
-bool   lvl4          = input.bool(true, "4H", inline = "l1", group = G_LVL, display = display.none)
-bool   lvl1          = input.bool(true, "1H", inline = "l1", group = G_LVL, display = display.none)
-bool   lvl15         = input.bool(true, "15m", inline = "l1", group = G_LVL, display = display.none)
-bool   lvlC          = input.bool(true, "Chart", inline = "l1", group = G_LVL, display = display.none)
-string tfL3          = input.timeframe("60", "Level timeframe 3", group = G_LVL, display = display.none)
-string tfL4          = input.timeframe("15", "Level timeframe 4", group = G_LVL, display = display.none)
+bool   lvlD          = input.bool(true, "Daily levels (gold)", group = G_LVL, display = display.none)
+bool   lvl4          = input.bool(true, "4H levels", group = G_LVL, display = display.none)
+bool   lvl1          = input.bool(true, "Intraday levels", inline = "l3", group = G_LVL, display = display.none)
+string tfL3          = input.timeframe("60", "", inline = "l3", group = G_LVL, display = display.none)
+bool   lvl15         = input.bool(true, "Entry-zone levels", inline = "l4", group = G_LVL, display = display.none)
+string tfL4          = input.timeframe("15", "", inline = "l4", group = G_LVL, display = display.none)
+bool   lvlC          = input.bool(true, "Chart timeframe levels", group = G_LVL, display = display.none)
 int    pivHtf        = input.int(1, "Daily & 4H: candles each side of the turn", minval = 1, maxval = 3, group = G_LVL, display = display.none, tooltip = "A ceiling is green candle(s) followed by red candle(s): the level sits on the highest BODY. A floor is red then green, on the lowest body.")
 int    pivLtf        = input.int(2, "1H, 15m & chart: candles each side of the turn", minval = 1, maxval = 4, group = G_LVL, display = display.none)
 int    keepLvl       = input.int(3, "Keep levels per timeframe per side", minval = 1, maxval = 8, group = G_LVL, display = display.none)
@@ -177,8 +181,8 @@ string panelSizeIn   = input.string("Small", "Text size", options = ["Tiny", "Sm
 bool   showRecord    = input.bool(true, "On-chart record", group = G_DSH, display = display.none)
 
 // ── 12 Bot
-string botMode       = input.string("Setups and trade updates", "Send JSON to your bot", options = ["Setups and trade updates", "Off"], group = G_BOT, display = display.none, tooltip = "Create ONE alert: condition 'Any alert() function call', paste your bot's webhook URL. Every session bias, stop order, entry, breakeven, warning and exit is sent as JSON.")
-string botTag        = input.string("", "Bot tag (optional)", group = G_BOT, display = display.none)
+string botMode       = input.string(PK_EVENTS, "Send JSON packet", options = [PK_EVENTS, PK_EVERY, PK_OFF], group = G_BOT, display = display.none, tooltip = "Create ONE alert: condition 'Any alert() function call', tick Webhook URL and paste your agent's URL. Setups and trade updates: session bias, stop orders, entries, breakeven, warnings and exits. Every bar close: also one BAR_CLOSE packet on every other closed candle.")
+string botTag        = input.string("", "Packet tag (optional)", group = G_BOT, display = display.none, tooltip = "Copied into every packet. Use it to route several charts.")
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 //  THEME
@@ -831,6 +835,8 @@ f_liqGrab(int side, int k) =>
 
 [okL, topL, botL, kL] = f_findRange(1, atr)
 [okS, topS, botS, kS] = f_findRange(-1, atr)
+bool liqL = f_liqGrab(1, kL)
+bool liqS = f_liqGrab(-1, kS)
 bool strongC = cRng > 0 and cBody >= minBodyPct / 100 * cRng
 
 // Setup / trade state
@@ -930,7 +936,7 @@ if canLook
             rBot     := bot
             rBars    := k
             rT0      := time[k]
-            rLiq     := f_liqGrab(side, k)
+            rLiq     := side == 1 ? liqL : liqS
             rZone    := f_inZone(px)
             bHi      := high
             bLo      := low
@@ -1183,29 +1189,47 @@ alertcondition(evEntry, "MATH: entry", "Mathematical Indicator: ENTRY on {{ticke
 alertcondition(evExit, "MATH: trade closed", "Mathematical Indicator: trade closed on {{ticker}} ({{interval}}) at {{close}}")
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
-//  🤖 24/7 BOT · JSON ALERTS
+//  🤖 AI AGENT PACKET · JSON ALERTS
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
+// Nearest unbroken level ahead of price on each side, any timeframe
+[nCeil, nCeilTfc]   = f_nextLevel(1, close, 0)
+[nFloor, nFloorTfc] = f_nextLevel(-1, close, 0)
+
+f_q(string x) =>
+    "\"" + x + "\""
+
+f_numOrNull(float x, string fmt) =>
+    na(x) ? "null" : str.tostring(x, fmt)
+
 f_json(string ev, string status) =>
     float  buf  = bufTicks * syminfo.mintick
     float  oNow = st == 2 and risk > 0 ? (close - eP) * sd / risk : na
     float  wr   = nTr > 0 ? float(nW) / nTr * 100 : na
-    string j = "{\"source\":\"mathematical-indicator\",\"version\":\"1.0\""
-    j += ",\"event\":\"" + ev + "\",\"tag\":\"" + botTag + "\""
-    j += ",\"symbol\":\"" + syminfo.ticker + "\",\"exchange\":\"" + syminfo.prefix + "\",\"timeframe\":\"" + timeframe.period + "\""
-    j += ",\"time\":\"" + str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC") + "\",\"price\":" + f_num(close)
-    j += ",\"session\":{\"name\":\"" + f_sessName(sIdx) + "\",\"live\":" + f_bool(sessIdx != 0) + ",\"trades\":" + str.tostring(tradesSess) + ",\"max_trades\":" + str.tostring(maxTradesSess) + "}"
-    j += ",\"story\":{\"bias\":\"" + f_biasWord(sBias) + "\",\"daily_candle\":\"" + f_dirWord(sD) + "\",\"h4_candle\":\"" + f_dirWord(sH) + "\",\"staircase\":\"" + f_stairKey(sStory) + "\",\"staircase_tf\":\"" + storyTf + "\",\"reason\":\"" + sWhy + "\"}"
-    j += ",\"zone\":{\"mode\":\"" + (sMode == 2 ? "PULLBACK" : "BREAKOUT") + "\",\"daily_ceiling\":" + f_num(dCeil) + ",\"daily_floor\":" + f_num(dFloor) + ",\"position_pct\":" + (na(posPct) ? "null" : str.tostring(posPct, "0.0")) + ",\"at_daily_ceiling\":" + f_bool(atCeil) + ",\"at_daily_floor\":" + f_bool(atFloor) + ",\"blocked_today\":" + f_bool(sBias == 1 ? blkL : sBias == -1 ? blkS : false) + ",\"in_clean_zone\":" + f_bool(f_inZone(close)) + "}"
-    j += ",\"setup\":{\"side\":\"" + (sd == 1 ? "LONG" : sd == -1 ? "SHORT" : "NONE") + "\",\"range_top\":" + f_num(rTop) + ",\"range_bottom\":" + f_num(rBot) + ",\"range_candles\":" + str.tostring(rBars) + ",\"liquidity_grab\":" + f_bool(rLiq) + ",\"in_clean_zone\":" + f_bool(rZone) + ",\"breakout_high\":" + f_num(bHi) + ",\"breakout_low\":" + f_num(bLo) + ",\"rubber_band\":" + f_bool(wickSeen or evWick) + "}"
-    j += ",\"order\":{\"type\":\"STOP\",\"action\":\"" + (sd == 1 ? "BUY" : "SELL") + "\",\"price\":" + f_num(trig) + ",\"stop_loss\":" + f_num(sd == 1 ? bLo - buf : bHi + buf) + ",\"cancel_after_candles\":" + str.tostring(maxWait) + "}"
-    j += ",\"trade\":{\"status\":\"" + status + "\",\"entry\":" + f_num(eP) + ",\"stop\":" + f_num(sP) + ",\"risk_per_unit\":" + f_num(risk) + ",\"take_profit_1r\":" + f_num(r1) + ",\"target\":" + f_num(tgt) + ",\"target_source\":\"" + tgtSrc + "\",\"breakeven\":" + f_bool(beOn) + ",\"close_pct_at_1r\":" + str.tostring(exitPlan == EX_LEVEL ? partPct : 0, "#") + ",\"open_r\":" + (na(oNow) ? "null" : str.tostring(oNow, "0.00")) + ",\"exit_price\":" + (ev == "EXIT" ? f_num(exitPx) : "null") + ",\"result_r\":" + (ev == "EXIT" and not na(exitR) ? str.tostring(exitR, "0.00") : "null") + ",\"note\":\"" + (ev == "EXIT" or ev == "STOP_ORDER_CANCELLED" ? whyTxt : "") + "\"}"
-    j += ",\"record\":{\"trades\":" + str.tostring(nTr) + ",\"wins\":" + str.tostring(nW) + ",\"breakeven\":" + str.tostring(nBE) + ",\"losses\":" + str.tostring(nL) + ",\"win_rate\":" + (na(wr) ? "null" : str.tostring(wr, "0.0")) + ",\"net_r\":" + str.tostring(sumR, "0.00") + ",\"note\":\"this chart's history, no fees\"}"
+    bool   hasS = st >= 1 or ev == "STOP_ORDER_CANCELLED" or ev == "EXIT" or ev == "TOO_FAST_TAKE_PROFIT"
+    bool   hasT = st == 2 or ev == "EXIT" or ev == "TOO_FAST_TAKE_PROFIT"
+    int    sdx  = hasS ? sd : 0
+    string sym  = syminfo.prefix + ":" + syminfo.ticker
+    string code = "MATH|" + syminfo.ticker + "|" + timeframe.period + "|" + str.upper(f_sessName(sIdx)) + "|" + f_biasWord(sBias) + "|" + (sMode == 2 ? "PULLBACK" : "BREAKOUT") + "|" + status
+    string j = "{\"schema\":\"mathematical-indicator/v1\""
+    j += ",\"event\":" + f_q(ev) + ",\"tag\":" + f_q(botTag) + ",\"symbol\":" + f_q(sym) + ",\"timeframe\":" + f_q(timeframe.period)
+    j += ",\"time\":" + f_q(str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC")) + ",\"state_code\":" + f_q(code)
+    j += ",\"candle\":{\"open\":" + f_num(open) + ",\"high\":" + f_num(high) + ",\"low\":" + f_num(low) + ",\"close\":" + f_num(close) + ",\"direction\":" + f_q(close > open ? "bull" : close < open ? "bear" : "flat") + ",\"body_pct\":" + f_numOrNull(cRng > 0 ? cBody / cRng * 100 : na, "0.0") + ",\"upper_wick_pct\":" + f_numOrNull(cRng > 0 ? (high - math.max(open, close)) / cRng * 100 : na, "0.0") + ",\"lower_wick_pct\":" + f_numOrNull(cRng > 0 ? (math.min(open, close) - low) / cRng * 100 : na, "0.0") + ",\"range_atr\":" + f_numOrNull(atr > 0 ? cRng / atr : na, "0.00") + "}"
+    j += ",\"session\":{\"name\":" + f_q(f_sessName(sIdx)) + ",\"live\":" + f_bool(sessIdx != 0) + ",\"trades\":" + str.tostring(tradesSess) + ",\"max_trades\":" + str.tostring(maxTradesSess) + "}"
+    j += ",\"story\":{\"bias\":" + f_q(f_biasWord(sBias)) + ",\"daily_candle\":" + f_q(f_dirWord(sD)) + ",\"h4_candle\":" + f_q(f_dirWord(sH)) + ",\"staircase\":" + f_q(f_stairKey(sStory)) + ",\"staircase_tf\":" + f_q(storyTf) + ",\"reason\":" + f_q(sWhy) + "}"
+    j += ",\"zone\":{\"mode\":" + f_q(sMode == 2 ? "PULLBACK" : "BREAKOUT") + ",\"daily_ceiling\":" + f_num(dCeil) + ",\"daily_floor\":" + f_num(dFloor) + ",\"position_pct\":" + f_numOrNull(posPct, "0.0") + ",\"at_daily_ceiling\":" + f_bool(atCeil) + ",\"at_daily_floor\":" + f_bool(atFloor) + ",\"blocked_today\":" + f_bool(sBias == 1 ? blkL : sBias == -1 ? blkS : false) + ",\"in_clean_zone\":" + f_bool(f_inZone(close)) + ",\"next_ceiling\":" + f_num(nCeil) + ",\"next_ceiling_tf\":" + (na(nCeil) ? "null" : f_q(f_lvlTfName(nCeilTfc))) + ",\"next_floor\":" + f_num(nFloor) + ",\"next_floor_tf\":" + (na(nFloor) ? "null" : f_q(f_lvlTfName(nFloorTfc))) + "}"
+    j += ",\"setup\":{\"side\":" + f_q(sdx == 1 ? "LONG" : sdx == -1 ? "SHORT" : "NONE") + ",\"range_top\":" + f_num(hasS ? rTop : na) + ",\"range_bottom\":" + f_num(hasS ? rBot : na) + ",\"range_candles\":" + (hasS ? str.tostring(rBars) : "null") + ",\"liquidity_grab\":" + f_bool(hasS and rLiq) + ",\"in_clean_zone\":" + f_bool(hasS and rZone) + ",\"breakout_high\":" + f_num(hasS ? bHi : na) + ",\"breakout_low\":" + f_num(hasS ? bLo : na) + ",\"rubber_band\":" + f_bool(hasS and (wickSeen or evWick)) + "}"
+    j += ",\"order\":{\"active\":" + f_bool(st == 1) + ",\"type\":\"STOP\",\"action\":" + f_q(sdx == 1 ? "BUY" : sdx == -1 ? "SELL" : "NONE") + ",\"price\":" + f_num(hasS ? trig : na) + ",\"stop_loss\":" + f_num(hasS ? (sd == 1 ? bLo - buf : bHi + buf) : na) + ",\"cancel_after_candles\":" + str.tostring(maxWait) + "}"
+    j += ",\"trade\":{\"status\":" + f_q(status) + ",\"entry\":" + f_num(hasT ? eP : na) + ",\"stop\":" + f_num(hasT ? sP : na) + ",\"risk_per_unit\":" + f_num(hasT ? risk : na) + ",\"take_profit_1r\":" + f_num(hasT ? r1 : na) + ",\"target\":" + f_num(hasT ? tgt : na) + ",\"target_source\":" + (hasT ? f_q(tgtSrc) : "null") + ",\"breakeven\":" + f_bool(hasT and beOn) + ",\"close_pct_at_1r\":" + str.tostring(exitPlan == EX_LEVEL ? partPct : 0, "#") + ",\"open_r\":" + f_numOrNull(oNow, "0.00") + ",\"exit_price\":" + (ev == "EXIT" ? f_num(exitPx) : "null") + ",\"result_r\":" + (ev == "EXIT" ? f_numOrNull(exitR, "0.00") : "null") + ",\"note\":" + f_q(ev == "EXIT" or ev == "STOP_ORDER_CANCELLED" ? whyTxt : "") + "}"
+    j += ",\"record\":{\"trades\":" + str.tostring(nTr) + ",\"wins\":" + str.tostring(nW) + ",\"breakeven\":" + str.tostring(nBE) + ",\"losses\":" + str.tostring(nL) + ",\"win_rate\":" + f_numOrNull(wr, "0.0") + ",\"net_r\":" + str.tostring(sumR, "0.00") + ",\"note\":\"this chart's history, no fees\"}"
     j += "}"
     j
 
-if cf and botMode != "Off"
+f_statusNow() =>
+    st == 2 ? "OPEN" : st == 1 ? "ORDER_WORKING" : "FLAT"
+
+if cf and botMode != PK_OFF
     if evSess
-        alert(f_json("SESSION_BIAS", st == 2 ? "OPEN" : "FLAT"), alert.freq_all)
+        alert(f_json("SESSION_BIAS", f_statusNow()), alert.freq_all)
     if evArm
         alert(f_json("STOP_ORDER_PLACED", "ORDER_WORKING"), alert.freq_all)
     if evCancel
@@ -1218,6 +1242,9 @@ if cf and botMode != "Off"
         alert(f_json("TOO_FAST_TAKE_PROFIT", st == 2 ? "OPEN" : "CLOSED"), alert.freq_all)
     if evExit
         alert(f_json("EXIT", "CLOSED"), alert.freq_all)
+    bool anyEvent = evSess or evArm or evCancel or evEntry or evBE or evFast or evExit
+    if botMode == PK_EVERY and not anyEvent
+        alert(f_json("BAR_CLOSE", f_statusNow()), alert.freq_all)
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 //  📊 DASHBOARD

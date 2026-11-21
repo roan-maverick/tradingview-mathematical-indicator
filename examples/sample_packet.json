@@ -1,0 +1,91 @@
+{
+  "schema": "mathematical-indicator/v1",
+  "event": "STOP_ORDER_PLACED",
+  "tag": "nq-5m",
+  "symbol": "CME_MINI:NQ1!",
+  "timeframe": "5",
+  "time": "2026-08-03T13:50:00Z",
+  "state_code": "MATH|NQ1!|5|NYSE|BUY|BREAKOUT|ORDER_WORKING",
+  "candle": {
+    "open": 21100.7,
+    "high": 21116.6,
+    "low": 21098.6,
+    "close": 21116.3,
+    "direction": "bull",
+    "body_pct": 86.4,
+    "upper_wick_pct": 1.7,
+    "lower_wick_pct": 11.9,
+    "range_atr": 0.65
+  },
+  "session": {
+    "name": "NYSE",
+    "live": true,
+    "trades": 0,
+    "max_trades": 2
+  },
+  "story": {
+    "bias": "BUY",
+    "daily_candle": "UP",
+    "h4_candle": "UP",
+    "staircase": "DOWN",
+    "staircase_tf": "daily",
+    "reason": "2 candles agree"
+  },
+  "zone": {
+    "mode": "BREAKOUT",
+    "daily_ceiling": 22993.9,
+    "daily_floor": 18890.6,
+    "position_pct": 54.2,
+    "at_daily_ceiling": false,
+    "at_daily_floor": false,
+    "blocked_today": false,
+    "in_clean_zone": true,
+    "next_ceiling": 21140.1,
+    "next_ceiling_tf": "1H",
+    "next_floor": 21076.7,
+    "next_floor_tf": "5m"
+  },
+  "setup": {
+    "side": "LONG",
+    "range_top": 21112.6,
+    "range_bottom": 21070.4,
+    "range_candles": 14,
+    "liquidity_grab": true,
+    "in_clean_zone": true,
+    "breakout_high": 21116.6,
+    "breakout_low": 21098.6,
+    "rubber_band": false
+  },
+  "order": {
+    "active": true,
+    "type": "STOP",
+    "action": "BUY",
+    "price": 21116.6,
+    "stop_loss": 21098.6,
+    "cancel_after_candles": 6
+  },
+  "trade": {
+    "status": "ORDER_WORKING",
+    "entry": null,
+    "stop": null,
+    "risk_per_unit": null,
+    "take_profit_1r": null,
+    "target": null,
+    "target_source": null,
+    "breakeven": false,
+    "close_pct_at_1r": 50,
+    "open_r": null,
+    "exit_price": null,
+    "result_r": null,
+    "note": ""
+  },
+  "record": {
+    "trades": 8,
+    "wins": 5,
+    "breakeven": 0,
+    "losses": 3,
+    "win_rate": 62.5,
+    "net_r": 3.84,
+    "note": "this chart's history, no fees"
+  }
+}
