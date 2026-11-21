@@ -1,0 +1,1417 @@
+// This source code is released under the MIT License: https://opensource.org/licenses/MIT
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  THE MATHEMATICAL INDICATOR  ·  2-CANDLE BIAS STRATEGY
+//  Story → Zone → Strat  |  Pine Script® v6  |  Overlay
+//  https://github.com/roan-maverick/tradingview-mathematical-indicator
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//
+//  THE STRATEGY IN PLAIN WORDS
+//  ───────────────────────────────────────────────────────────────────────────────────────────────
+//   1. STORY   Two candles pick the direction for the whole session: yesterday's daily candle and
+//              the last 4H candle before the session. Both green = only BUY. Both red = only SELL.
+//              They disagree = MIXED: the story decides (daily level, weekly staircase, daily candle).
+//   2. ZONE    Floors and ceilings are marked on candle BODIES. A level only breaks when a candle of
+//              its OWN timeframe closes through it. Wicks through it make it stronger.
+//              No buys under a daily ceiling, no sells over a daily floor: come back tomorrow.
+//              Trades only happen inside clean zones: areas price already crossed without stopping.
+//              If the pre-session candle already ran in the bias direction, wait for a pullback.
+//   3. STRAT   Inside the first hour of a session: price pauses (a range with at least two opposite
+//              candles), one strong candle closes outside it (never bigger than half the range),
+//              the next candle dips back (the "rubber band" wick), then a stop order at the breakout
+//              candle's high (low for sells) fires the entry. Stop loss under the breakout candle.
+//   4. EXIT    1:1 first. At 1R the stop moves to breakeven (part of the trade can be closed there),
+//              the rest rides to the next level. If price runs too fast in a straight line, take it.
+//
+//  INTEGRITY
+//  ───────────────────────────────────────────────────────────────────────────────────────────────
+//   • Everything runs on CLOSED candles. Higher-timeframe data uses the previous CLOSED candle
+//     (expr[1] + lookahead_on): nothing repaints.
+//   • Entries are simulated from OHLC: a stop order fills when a later candle trades through it.
+//     When the rubber band wick and the break happen in the same candle, the dip is assumed first.
+//   • The on-chart record is this chart's history, no fees or slippage. Past results are not a
+//     promise of future results.
+//   • Built for 5 to 15 minute charts on futures, forex, gold, indices and crypto.
+//
+//  For education and research. Not financial advice.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+//@version=6
+indicator("The Mathematical Indicator · 2-Candle Bias", shorttitle = "MATH", overlay = true, max_labels_count = 500, max_boxes_count = 500, max_lines_count = 500, max_bars_back = 150)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+const string G_GEN = "⚙ 00 · General"
+const string G_COL = "🎨 01 · Colors"
+const string G_SES = "🕐 02 · Sessions (first hour only)"
+const string G_BIA = "① 03 · Story · The 2 Candles"
+const string G_LVL = "② 04 · Floors & Ceilings"
+const string G_ZON = "② 05 · Clean Zones"
+const string G_POS = "② 06 · Positioning"
+const string G_MOD = "② 07 · Breakout or Pullback"
+const string G_TRG = "③ 08 · Strat · The Trigger"
+const string G_EXT = "④ 09 · Exits"
+const string G_VIS = "✨ 10 · Visuals"
+const string G_DSH = "📊 11 · Dashboard"
+const string G_BOT = "🤖 12 · 24/7 Bot (JSON alerts)"
+
+const string TIE_STORY = "Tell the story: daily level → weekly staircase → daily candle"
+const string TIE_DAILY = "Daily candle wins"
+const string TIE_SKIP  = "Stand aside"
+const string EX_LEVEL  = "1R → breakeven, rest to the next level"
+const string EX_1R     = "1:1 only"
+
+// ── 00 General
+bool   glowOn        = input.bool(true, "Neon glow", group = G_GEN, display = display.none)
+bool   colorEvents   = input.bool(true, "Color setup candles (breakout · rubber band · entry)", group = G_GEN, display = display.none)
+bool   biasCandles   = input.bool(false, "Tint every other candle by the session bias", group = G_GEN, display = display.none)
+bool   tintWindow    = input.bool(true, "Tint the trading window by the bias", group = G_GEN, display = display.none)
+
+// ── 01 Colors
+color  cBuy          = input.color(#00FF9C, "BUY · Neon Green", group = G_COL, display = display.none)
+color  cCyan         = input.color(#00E5FF, "Long setups · buyers wave · Electric Cyan", group = G_COL, display = display.none)
+color  cSell         = input.color(#FF2D55, "SELL · Neon Red", group = G_COL, display = display.none)
+color  cMagenta      = input.color(#FF2BD6, "Short setups · Magenta", group = G_COL, display = display.none)
+color  cPurple       = input.color(#A855F7, "MIXED · sellers wave · Purple", group = G_COL, display = display.none)
+color  cIndigo       = input.color(#536DFE, "Clean zones · Indigo", group = G_COL, display = display.none)
+color  cGold         = input.color(#FFC400, "Daily levels · targets · Gold", group = G_COL, display = display.none)
+color  cAmber        = input.color(#FF9F1C, "Warnings · Amber", group = G_COL, display = display.none)
+color  cSilver       = input.color(#C0C6D4, "Text · Silver", group = G_COL, display = display.none)
+color  cGrey         = input.color(#6B7280, "Muted · Grey", group = G_COL, display = display.none)
+
+// ── 02 Sessions: the strategy only looks for setups in the first hour of each session
+bool   onAsia        = input.bool(true, "Asia", inline = "s1", group = G_SES, display = display.none)
+string ssAsia        = input.session("0900-1000", "", inline = "s1", group = G_SES, display = display.none)
+string tzAsia        = input.string("Asia/Tokyo", "", inline = "s1", group = G_SES, display = display.none)
+bool   onLon         = input.bool(true, "London", inline = "s2", group = G_SES, display = display.none)
+string ssLon         = input.session("0800-0900", "", inline = "s2", group = G_SES, display = display.none)
+string tzLon         = input.string("Europe/London", "", inline = "s2", group = G_SES, display = display.none)
+bool   onNy          = input.bool(false, "New York", inline = "s3", group = G_SES, display = display.none)
+string ssNy          = input.session("0830-0930", "", inline = "s3", group = G_SES, display = display.none)
+string tzNy          = input.string("America/New_York", "", inline = "s3", group = G_SES, display = display.none)
+bool   onNyse        = input.bool(true, "NYSE open", inline = "s4", group = G_SES, display = display.none)
+string ssNyse        = input.session("0930-1030", "", inline = "s4", group = G_SES, display = display.none)
+string tzNyse        = input.string("America/New_York", "", inline = "s4", group = G_SES, display = display.none)
+bool   onPow         = input.bool(false, "Power hour", inline = "s5", group = G_SES, display = display.none)
+string ssPow         = input.session("1500-1600", "", inline = "s5", group = G_SES, display = display.none)
+string tzPow         = input.string("America/New_York", "", inline = "s5", group = G_SES, display = display.none)
+int    maxTradesSess = input.int(2, "Max trades per session", minval = 1, maxval = 5, group = G_SES, display = display.none)
+int    maxHoldMin    = input.int(240, "Close a trade still open after (minutes, 0 = never)", minval = 0, maxval = 2880, group = G_SES, display = display.none)
+
+// ── 03 Story: the two candles
+string tfDay         = input.timeframe("D", "Candle 1 · yesterday", group = G_BIA, display = display.none)
+string tf4h          = input.timeframe("240", "Candle 2 · last candle before the session", group = G_BIA, display = display.none, tooltip = "The 4H candle that CLOSED right before the session starts. The 4H candle the session opens in is still running, so it is never used.")
+string tfWeek        = input.timeframe("W", "Story timeframe (staircase)", group = G_BIA, display = display.none)
+int    stairLen      = input.int(2, "Staircase swing strength", minval = 1, maxval = 5, group = G_BIA, display = display.none, tooltip = "Staircase up = higher highs AND higher lows. Staircase down = lower highs AND lower lows. Anything else is a box.")
+string tieMode       = input.string(TIE_STORY, "When the 2 candles disagree (MIXED)", options = [TIE_STORY, TIE_DAILY, TIE_SKIP], group = G_BIA, display = display.none, tooltip = "Story: at a daily ceiling → SELL, at a daily floor → BUY, otherwise follow the weekly staircase, and if the weekly is a box the daily candle wins (it is the stronger candle).")
+
+// ── 04 Floors and ceilings (support and resistance on candle bodies)
+bool   lvlD          = input.bool(true, "Daily", inline = "l1", group = G_LVL, display = display.none)
+bool   lvl4          = input.bool(true, "4H", inline = "l1", group = G_LVL, display = display.none)
+bool   lvl1          = input.bool(true, "1H", inline = "l1", group = G_LVL, display = display.none)
+bool   lvl15         = input.bool(true, "15m", inline = "l1", group = G_LVL, display = display.none)
+bool   lvlC          = input.bool(true, "Chart", inline = "l1", group = G_LVL, display = display.none)
+string tfL3          = input.timeframe("60", "Level timeframe 3", group = G_LVL, display = display.none)
+string tfL4          = input.timeframe("15", "Level timeframe 4", group = G_LVL, display = display.none)
+int    pivHtf        = input.int(1, "Daily & 4H: candles each side of the turn", minval = 1, maxval = 3, group = G_LVL, display = display.none, tooltip = "A ceiling is green candle(s) followed by red candle(s): the level sits on the highest BODY. A floor is red then green, on the lowest body.")
+int    pivLtf        = input.int(2, "1H, 15m & chart: candles each side of the turn", minval = 1, maxval = 4, group = G_LVL, display = display.none)
+int    keepLvl       = input.int(3, "Keep levels per timeframe per side", minval = 1, maxval = 8, group = G_LVL, display = display.none)
+float  mergeAtr      = input.float(0.15, "Merge levels closer than (x ATR of their timeframe)", minval = 0, maxval = 1, step = 0.05, group = G_LVL, display = display.none)
+bool   showBroken    = input.bool(true, "Show broken levels (faded)", group = G_LVL, display = display.none)
+
+// ── 05 Clean zones
+bool   zoneOn        = input.bool(true, "Show clean zones", group = G_ZON, display = display.none)
+string tfZone        = input.timeframe("15", "Clean zone timeframe", group = G_ZON, display = display.none)
+int    zoneRun       = input.int(3, "Min candles in one direction", minval = 2, maxval = 10, group = G_ZON, display = display.none, tooltip = "A clean move: candles in one direction with no floor or ceiling in between (one small opposite candle is allowed, two in a row make a level and end the move).")
+float  zoneMove      = input.float(1.5, "Min move (x ATR of that timeframe)", minval = 0.2, maxval = 10, step = 0.1, group = G_ZON, display = display.none)
+bool   zoneReq       = input.bool(true, "Entries must be inside a clean zone", group = G_ZON, display = display.none)
+int    keepZones     = input.int(8, "Keep zones", minval = 1, maxval = 30, group = G_ZON, display = display.none)
+
+// ── 06 Positioning
+float  proxAtr       = input.float(0.25, "'At' a daily level = within (x daily ATR)", minval = 0, maxval = 2, step = 0.05, group = G_POS, display = display.none)
+bool   blockCeil     = input.bool(true, "No buys at a daily ceiling, no sells at a daily floor", group = G_POS, display = display.none, tooltip = "Only a DAILY close can break a daily level. If the bias is BUY and price is pressed against a daily ceiling, the day is skipped: come back tomorrow.")
+
+// ── 07 Breakout or pullback
+bool   modeOn        = input.bool(true, "If the pre-session candle already ran, wait for a pullback", group = G_MOD, display = display.none, tooltip = "If the 4H candle before the session already trended in the bias direction, the session usually wants better prices first: setups must form after a pullback. If it ranged, breakouts are taken straight away.")
+float  trendBody     = input.float(60, "Ran = body at least % of the candle", minval = 30, maxval = 95, group = G_MOD, display = display.none)
+float  trendSize     = input.float(1.0, "…and size at least (x 4H ATR)", minval = 0.2, maxval = 3, step = 0.1, group = G_MOD, display = display.none)
+float  pbDepth       = input.float(38.2, "Pullback depth into the pre-session candle (%)", minval = 10, maxval = 90, step = 0.1, group = G_MOD, display = display.none)
+
+// ── 08 The trigger
+int    minRangeBars  = input.int(3, "Range: min candles", minval = 2, maxval = 30, group = G_TRG, display = display.none)
+int    maxRangeBars  = input.int(20, "Range: max candles", minval = 3, maxval = 60, group = G_TRG, display = display.none)
+int    minOpp        = input.int(2, "Range: min opposite candles (red for buys)", minval = 1, maxval = 10, group = G_TRG, display = display.none)
+float  minRangeAtr   = input.float(0.5, "Range: min height (x ATR)", minval = 0, maxval = 5, step = 0.1, group = G_TRG, display = display.none)
+float  maxRangeAtr   = input.float(4.0, "Range: max height (x ATR)", minval = 0.5, maxval = 15, step = 0.1, group = G_TRG, display = display.none)
+float  minBodyPct    = input.float(50, "Breakout candle: body at least % of the candle", minval = 0, maxval = 100, group = G_TRG, display = display.none, tooltip = "A convincing candle, not a doji.")
+float  maxBreakPct   = input.float(50, "Breakout candle: no bigger than % of the range", minval = 10, maxval = 300, group = G_TRG, display = display.none, tooltip = "If the breakout candle is bigger than half the range the stop gets too wide and price usually pulls back first.")
+float  wickAtr       = input.float(0.10, "Rubber band wick: at least (x ATR)", minval = 0, maxval = 2, step = 0.01, group = G_TRG, display = display.none)
+float  wickPct       = input.float(20, "Rubber band wick: at least % of its candle", minval = 0, maxval = 90, group = G_TRG, display = display.none, tooltip = "Tiny 'nipple' wicks do not count. A break with no dip first is skipped.")
+int    maxWait       = input.int(6, "Cancel the stop order after (candles)", minval = 1, maxval = 30, group = G_TRG, display = display.none)
+int    bufTicks      = input.int(0, "Stop loss buffer (ticks)", minval = 0, maxval = 500, group = G_TRG, display = display.none)
+
+// ── 09 Exits
+string exitPlan      = input.string(EX_LEVEL, "Exit plan", options = [EX_LEVEL, EX_1R], group = G_EXT, display = display.none)
+float  partPct       = input.float(50, "Close % at 1R (0 = none)", minval = 0, maxval = 100, group = G_EXT, display = display.none, tooltip = "One part pays you at 1:1, the rest rides risk-free to the next level.")
+float  maxR          = input.float(3.0, "Target cap when no level is ahead (R)", minval = 1, maxval = 10, step = 0.5, group = G_EXT, display = display.none)
+bool   fastOn        = input.bool(true, "Too-fast warning", group = G_EXT, display = display.none)
+float  fastR         = input.float(1.5, "…once the trade is up at least (R)", minval = 0.5, maxval = 5, step = 0.1, group = G_EXT, display = display.none)
+int    fastBars      = input.int(3, "…after this many straight candles", minval = 2, maxval = 10, group = G_EXT, display = display.none)
+bool   fastExit      = input.bool(true, "…and close the trade", group = G_EXT, display = display.none)
+
+// ── 10 Visuals
+bool   showAura      = input.bool(true, "Bias aura (cyan buyers wave · purple sellers wave)", group = G_VIS, display = display.none, tooltip = "Visual only. A smooth band around price that glows in the session bias color. It is NOT part of the signal.")
+int    auraLen       = input.int(21, "Aura length", minval = 5, maxval = 200, group = G_VIS, display = display.none)
+float  auraWidth     = input.float(1.2, "Aura width (x ATR)", minval = 0.2, maxval = 5, step = 0.1, group = G_VIS, display = display.none)
+bool   showSetups    = input.bool(true, "Ranges, breakouts & stop orders", group = G_VIS, display = display.none)
+bool   showTrades    = input.bool(true, "Trades (risk · reward · 1R · target)", group = G_VIS, display = display.none)
+bool   showBanner    = input.bool(true, "Session banners", group = G_VIS, display = display.none)
+bool   showCancels   = input.bool(true, "Cancelled setups (why)", group = G_VIS, display = display.none)
+int    keepFx        = input.int(12, "Keep setups & trades on chart", minval = 1, maxval = 40, group = G_VIS, display = display.none)
+
+// ── 11 Dashboard
+bool   showPanel     = input.bool(true, "Show dashboard", group = G_DSH, display = display.none)
+string panelModeIn   = input.string("Full", "Mode", options = ["Full", "Compact"], group = G_DSH, display = display.none)
+string panelPosIn    = input.string("Top right", "Position", options = ["Top right", "Top left", "Bottom right", "Bottom left", "Middle right", "Middle left"], group = G_DSH, display = display.none)
+string panelSizeIn   = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal"], group = G_DSH, display = display.none)
+bool   showRecord    = input.bool(true, "On-chart record", group = G_DSH, display = display.none)
+
+// ── 12 Bot
+string botMode       = input.string("Setups and trade updates", "Send JSON to your bot", options = ["Setups and trade updates", "Off"], group = G_BOT, display = display.none, tooltip = "Create ONE alert: condition 'Any alert() function call', paste your bot's webhook URL. Every session bias, stop order, entry, breakeven, warning and exit is sent as JSON.")
+string botTag        = input.string("", "Bot tag (optional)", group = G_BOT, display = display.none)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  THEME
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+const color C_PILL = #0B0F1C   // label background
+const color D_HEAD = #0B1226   // dashboard header
+const color D_SEC  = #121C38   // dashboard section
+const color D_ROW  = #070B16   // dashboard rows
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  TYPES
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// A floor or ceiling, marked on candle bodies
+type Level
+    float price
+    int   t
+    int   dir             // 1 = ceiling (resistance), -1 = floor (support)
+    int   tfc             // 0 daily, 1 4H, 2 level TF 3, 3 level TF 4, 4 chart
+    int   touches = 0
+    bool  broken  = false
+    line  ln
+    line  gl
+    label lb
+
+method killLevel(Level this) =>
+    if not na(this.ln)
+        line.delete(this.ln)
+    if not na(this.gl)
+        line.delete(this.gl)
+    if not na(this.lb)
+        label.delete(this.lb)
+    true
+
+// A clean zone: a stretch price already crossed without building a floor or ceiling
+type Zone
+    float top
+    float bot
+    int   dir
+    int   t0
+    bool  active = true
+    box   bx
+    box   gl
+
+method killZone(Zone this) =>
+    if not na(this.bx)
+        box.delete(this.bx)
+    if not na(this.gl)
+        box.delete(this.gl)
+    true
+
+// Every drawing that belongs to one setup or one trade
+type Fx
+    box   b1
+    box   b2
+    box   b3
+    line  l1
+    line  l2
+    line  l3
+    label t1
+    label t2
+    label t3
+    label t4
+
+method killFx(Fx this) =>
+    if not na(this.b1)
+        box.delete(this.b1)
+    if not na(this.b2)
+        box.delete(this.b2)
+    if not na(this.b3)
+        box.delete(this.b3)
+    if not na(this.l1)
+        line.delete(this.l1)
+    if not na(this.l2)
+        line.delete(this.l2)
+    if not na(this.l3)
+        line.delete(this.l3)
+    if not na(this.t1)
+        label.delete(this.t1)
+    if not na(this.t2)
+        label.delete(this.t2)
+    if not na(this.t3)
+        label.delete(this.t3)
+    if not na(this.t4)
+        label.delete(this.t4)
+    true
+
+f_trimFx(array<Fx> arr, int maxN) =>
+    while arr.size() > maxN
+        Fx o = arr.shift()
+        o.killFx()
+    true
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+f_num(float x) =>
+    na(x) ? "null" : str.tostring(x, format.mintick)
+
+f_bool(bool b) =>
+    b ? "true" : "false"
+
+f_clamp(float x, float lo, float hi) =>
+    math.max(lo, math.min(hi, x))
+
+f_tfLabel(string tf) =>
+    int m = math.round(timeframe.in_seconds(tf) / 60.0)
+    m < 60 ? str.tostring(m) + "m" : m < 1440 ? str.tostring(math.round(m / 60.0)) + "H" : m == 1440 ? "D" : m < 10080 ? str.tostring(math.round(m / 1440.0)) + "D" : m == 10080 ? "W" : str.tostring(math.round(m / 10080.0)) + "W"
+
+f_signed(float x, string fmt) =>
+    na(x) ? "n/a" : (x >= 0 ? "+" : "−") + str.tostring(math.abs(x), fmt)
+
+// Meter for the dashboard: █ filled, ░ empty
+f_meter(float pct, int n) =>
+    int f = int(math.round(f_clamp(nz(pct), 0, 100) / 100 * n))
+    str.repeat("█", f) + str.repeat("░", n - f)
+
+f_dots(int n) =>
+    n <= 0 ? "" : " " + str.repeat("•", math.min(n, 5))
+
+f_pos(string p) =>
+    switch p
+        "Top left"     => position.top_left
+        "Bottom right" => position.bottom_right
+        "Bottom left"  => position.bottom_left
+        "Middle right" => position.middle_right
+        "Middle left"  => position.middle_left
+        => position.top_right
+
+f_size(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Normal" => size.normal
+        => size.small
+
+f_dirWord(int d) =>
+    d == 1 ? "UP" : d == -1 ? "DOWN" : "FLAT"
+
+f_biasWord(int b) =>
+    b == 1 ? "BUY" : b == -1 ? "SELL" : "NONE"
+
+f_stairWord(int s) =>
+    na(s) ? "—" : s == 1 ? "▲ Staircase up" : s == -1 ? "▼ Staircase down" : "■ Box"
+
+f_stairKey(int s) =>
+    na(s) ? "UNKNOWN" : s == 1 ? "UP" : s == -1 ? "DOWN" : "BOX"
+
+// Body turn: green candle(s) then red candle(s) = ceiling on the highest body,
+// red then green = floor on the lowest body. n candles on each side of the turn.
+f_bodyPiv(int n) =>
+    bool  isRes = true
+    bool  isSup = true
+    float hiB   = math.max(open, close)
+    float loB   = math.min(open, close)
+    for i = 0 to 2 * n - 1
+        bool green = close[i] > open[i]
+        bool red   = close[i] < open[i]
+        if i < n
+            isRes := isRes and red
+            isSup := isSup and green
+        else
+            isRes := isRes and green
+            isSup := isSup and red
+        hiB := math.max(hiB, math.max(open[i], close[i]))
+        loB := math.min(loB, math.min(open[i], close[i]))
+    [isRes ? hiB : na, isSup ? loB : na]
+
+// Staircase: 1 = higher highs and higher lows, -1 = lower highs and lower lows, 0 = box, na = not enough history
+f_stair(int len) =>
+    float ph = ta.pivothigh(high, len, len)
+    float pl = ta.pivotlow(low, len, len)
+    var float h1 = na
+    var float h2 = na
+    var float l1 = na
+    var float l2 = na
+    if not na(ph)
+        h2 := h1
+        h1 := ph
+    if not na(pl)
+        l2 := l1
+        l1 := pl
+    int s = na(h2) or na(l2) ? na : h1 > h2 and l1 > l2 ? 1 : h1 < h2 and l1 < l2 ? -1 : 0
+    s
+
+f_stairPrev(int len) =>
+    int s = f_stair(len)
+    s[1]
+
+// Everything one higher timeframe gives us, from its previous CLOSED candle
+f_htf(int n, int sl) =>
+    [r, s] = f_bodyPiv(n)
+    int tt = time[n]
+    int sr = f_stair(sl)
+    float a = ta.atr(14)
+    [open[1], close[1], high[1], low[1], time[1], r[1], s[1], a[1], tt[1], sr[1]]
+
+// Clean move detector: candles in one direction with no level in between.
+// One opposite candle is a pause; two in a row build a level and end the move.
+f_clean(int minRun, float minMove) =>
+    var int   rDir   = 0
+    var int   rCount = 0
+    var int   rOpp   = 0
+    var float rStart = na
+    var float rExt   = na
+    var int   rT0    = na
+    float a  = ta.atr(14)
+    int   cd = close > open ? 1 : close < open ? -1 : 0
+    float zt = na
+    float zb = na
+    int   zd = 0
+    int   z0 = na
+    if rDir == 0
+        if cd != 0
+            rDir   := cd
+            rCount := 1
+            rOpp   := 0
+            rStart := open
+            rExt   := close
+            rT0    := time
+    else if cd == rDir
+        rCount += 1
+        rOpp   := 0
+        if (rDir == 1 and close > rExt) or (rDir == -1 and close < rExt)
+            rExt := close
+    else if cd == -rDir
+        rOpp += 1
+        if rOpp >= 2
+            if rCount >= minRun and math.abs(rExt - rStart) >= minMove * a
+                zt := math.max(rStart, rExt)
+                zb := math.min(rStart, rExt)
+                zd := rDir
+                z0 := rT0
+            rDir   := cd
+            rCount := 2
+            rOpp   := 0
+            rStart := open[1]
+            rExt   := cd == 1 ? math.max(close, close[1]) : math.min(close, close[1])
+            rT0    := time[1]
+    [zt, zb, zd, z0]
+
+f_cleanPrev(int minRun, float minMove) =>
+    [zt, zb, zd, z0] = f_clean(minRun, minMove)
+    [zt[1], zb[1], zd[1], z0[1], time[1]]
+
+f_inSess(string sess, string tz) =>
+    not na(time(timeframe.period, sess, tz))
+
+f_tfOk(string tf) =>
+    timeframe.in_seconds(tf) > timeframe.in_seconds()
+
+f_isNew(int t) =>
+    not na(t) and (na(t[1]) or t != t[1])
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  DATA
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+float atr    = ta.atr(14)
+int   barMs  = timeframe.in_seconds() * 1000
+bool  cf     = barstate.isconfirmed
+bool  newDay = timeframe.change("D")
+float cRng   = high - low
+float cBody  = math.abs(close - open)
+
+bool dOk = f_tfOk(tfDay)
+bool hOk = f_tfOk(tf4h)
+bool oOk = f_tfOk(tfL3) and lvl1
+bool qOk = f_tfOk(tfL4) and lvl15
+
+// Previous CLOSED candle of each higher timeframe (no repainting)
+[dO, dC, dH, dL, dT, dRes, dSup, dAtr, dTT, dStair] = request.security(syminfo.tickerid, tfDay, f_htf(pivHtf, stairLen), lookahead = barmerge.lookahead_on)
+[hO, hC, hH, hL, hT, hRes, hSup, hAtr, hTT, hStair] = request.security(syminfo.tickerid, tf4h, f_htf(pivHtf, stairLen), lookahead = barmerge.lookahead_on)
+[oO, oC, oH, oL, oT, oRes, oSup, oAtr, oTT, oStair] = request.security(syminfo.tickerid, tfL3, f_htf(pivLtf, stairLen), lookahead = barmerge.lookahead_on)
+[qO, qC, qH, qL, qT, qRes, qSup, qAtr, qTT, qStair] = request.security(syminfo.tickerid, tfL4, f_htf(pivLtf, stairLen), lookahead = barmerge.lookahead_on)
+int wStair = request.security(syminfo.tickerid, tfWeek, f_stairPrev(stairLen), lookahead = barmerge.lookahead_on)
+string zTf = timeframe.in_seconds(tfZone) >= timeframe.in_seconds() ? tfZone : timeframe.period
+[zTop, zBot, zDir, zT0, zT] = request.security(syminfo.tickerid, zTf, f_cleanPrev(zoneRun, zoneMove), lookahead = barmerge.lookahead_on)
+
+// Body turns on the chart's own timeframe
+[cRes, cSup] = f_bodyPiv(pivLtf)
+int cTT = time[pivLtf]
+
+bool dNew = f_isNew(dT)
+bool hNew = f_isNew(hT)
+bool oNew = f_isNew(oT)
+bool qNew = f_isNew(qT)
+bool zNew = f_isNew(zT)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  ② FLOORS & CEILINGS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+var array<Level> lvls  = array.new<Level>()
+var array<Zone>  zones = array.new<Zone>()
+
+f_lvlColor(int tfc, int dir) =>
+    tfc == 0 ? cGold : tfc <= 2 ? (dir == 1 ? cSell : cBuy) : (dir == 1 ? cMagenta : cCyan)
+
+f_lvlTfName(int tfc) =>
+    tfc == 0 ? f_tfLabel(tfDay) : tfc == 1 ? f_tfLabel(tf4h) : tfc == 2 ? f_tfLabel(tfL3) : tfc == 3 ? f_tfLabel(tfL4) : f_tfLabel(timeframe.period)
+
+f_lvlText(Level lv) =>
+    f_lvlTfName(lv.tfc) + (lv.dir == 1 ? " CEILING" : " FLOOR") + f_dots(lv.touches)
+
+f_drawLevel(Level lv) =>
+    color c   = f_lvlColor(lv.tfc, lv.dir)
+    bool  big = lv.tfc <= 1
+    int   x2  = math.max(time, lv.t + 1)
+    if glowOn and big
+        lv.gl := line.new(lv.t, lv.price, x2, lv.price, xloc = xloc.bar_time, extend = extend.right, color = color.new(c, 84), width = lv.tfc == 0 ? 8 : 5)
+    lv.ln := line.new(lv.t, lv.price, x2, lv.price, xloc = xloc.bar_time, extend = extend.right, color = color.new(c, big ? 0 : 20), width = big ? 2 : 1, style = big ? line.style_solid : lv.tfc == 2 ? line.style_dashed : line.style_dotted)
+    lv.lb := label.new(time + barMs * 3, lv.price, f_lvlText(lv), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(C_PILL, 15), textcolor = c, size = size.tiny)
+    true
+
+// Broken = a candle of the level's OWN timeframe closed through it
+f_breakLevel(Level lv, int tB) =>
+    lv.broken := true
+    if not na(lv.gl)
+        line.delete(lv.gl)
+    if not na(lv.lb)
+        label.delete(lv.lb)
+    if not na(lv.ln)
+        if showBroken
+            line.set_extend(lv.ln, extend.none)
+            line.set_x2(lv.ln, tB)
+            line.set_color(lv.ln, color.new(f_lvlColor(lv.tfc, lv.dir), 70))
+            line.set_style(lv.ln, line.style_dotted)
+            line.set_width(lv.ln, 1)
+        else
+            line.delete(lv.ln)
+    true
+
+f_trimLevels(int tfc, int dir) =>
+    int cnt = 0
+    int brk = 0
+    int n   = lvls.size()
+    if n > 0
+        for i = n - 1 to 0
+            Level lv = lvls.get(i)
+            if lv.tfc == tfc and lv.dir == dir
+                if lv.broken
+                    brk += 1
+                    if brk > 1 or not showBroken
+                        lv.killLevel()
+                        lvls.remove(i)
+                else
+                    cnt += 1
+                    if cnt > keepLvl
+                        lv.killLevel()
+                        lvls.remove(i)
+    true
+
+// A completed candle of timeframe tfc: closes break levels, wicks that fail add strength
+f_checkLevels(int tfc, float c, float h, float l, int tB) =>
+    int n = lvls.size()
+    if n > 0
+        for i = 0 to n - 1
+            Level lv = lvls.get(i)
+            if lv.tfc == tfc and not lv.broken
+                bool brk = lv.dir == 1 ? c > lv.price : c < lv.price
+                bool tch = lv.dir == 1 ? h >= lv.price : l <= lv.price
+                if brk
+                    f_breakLevel(lv, tB)
+                else if tch
+                    lv.touches += 1
+                    if not na(lv.lb)
+                        label.set_text(lv.lb, f_lvlText(lv))
+    f_trimLevels(tfc, 1)
+    f_trimLevels(tfc, -1)
+    true
+
+f_closeZone(Zone z) =>
+    z.active := false
+    if not na(z.bx)
+        box.set_extend(z.bx, extend.none)
+        box.set_right(z.bx, time)
+        box.set_bgcolor(z.bx, color.new(cGrey, 95))
+        box.set_border_color(z.bx, color.new(cGrey, 80))
+        box.set_text(z.bx, "")
+    if not na(z.gl)
+        box.delete(z.gl)
+    true
+
+// A new floor or ceiling inside a clean zone makes it messy: the zone is done
+f_messZones(float px) =>
+    int n = zones.size()
+    if n > 0
+        for i = 0 to n - 1
+            Zone  z   = zones.get(i)
+            float pad = (z.top - z.bot) * 0.08
+            if z.active and px > z.bot + pad and px < z.top - pad
+                f_closeZone(z)
+    true
+
+f_addLevel(float px, int t, int dir, int tfc, float tol) =>
+    bool merged = false
+    int  n      = lvls.size()
+    if n > 0
+        for i = 0 to n - 1
+            Level lv = lvls.get(i)
+            if not merged and lv.tfc == tfc and lv.dir == dir and not lv.broken and math.abs(lv.price - px) <= tol
+                lv.touches += 1
+                merged := true
+                if not na(lv.lb)
+                    label.set_text(lv.lb, f_lvlText(lv))
+    if not merged
+        Level nl = Level.new(px, t, dir, tfc)
+        f_drawLevel(nl)
+        lvls.push(nl)
+        f_trimLevels(tfc, dir)
+        if tfc >= 1 and tfc <= 3
+            f_messZones(px)
+    true
+
+f_feed(int tfc, float c, float h, float l, float res, float sup, int tt, float tol) =>
+    f_checkLevels(tfc, c, h, l, time)
+    if not na(res)
+        f_addLevel(res, tt, 1, tfc, tol)
+    if not na(sup)
+        f_addLevel(sup, tt, -1, tfc, tol)
+    true
+
+if cf
+    if dOk and lvlD and dNew
+        f_feed(0, dC, dH, dL, dRes, dSup, dTT, mergeAtr * nz(dAtr))
+    if hOk and lvl4 and hNew
+        f_feed(1, hC, hH, hL, hRes, hSup, hTT, mergeAtr * nz(hAtr))
+    if oOk and oNew
+        f_feed(2, oC, oH, oL, oRes, oSup, oTT, mergeAtr * nz(oAtr))
+    if qOk and qNew
+        f_feed(3, qC, qH, qL, qRes, qSup, qTT, mergeAtr * nz(qAtr))
+    if lvlC
+        f_feed(4, close, high, low, cRes, cSup, cTT, mergeAtr * nz(atr))
+
+// Keep the level labels at the right edge
+if barstate.islast and lvls.size() > 0
+    for i = 0 to lvls.size() - 1
+        Level lv = lvls.get(i)
+        if not na(lv.lb) and not lv.broken
+            label.set_x(lv.lb, time + barMs * 3)
+
+// Nearest daily ceiling / floor, and whether price is pressed against one
+f_dailyMap(float px, float prox) =>
+    float ceil = na
+    float flr  = na
+    bool  atC  = false
+    bool  atF  = false
+    int   n    = lvls.size()
+    if n > 0
+        for i = 0 to n - 1
+            Level lv = lvls.get(i)
+            if lv.tfc == 0 and not lv.broken
+                if lv.dir == 1
+                    if lv.price >= px
+                        ceil := na(ceil) ? lv.price : math.min(ceil, lv.price)
+                    if px >= lv.price - prox
+                        atC := true
+                else
+                    if lv.price <= px
+                        flr := na(flr) ? lv.price : math.max(flr, lv.price)
+                    if px <= lv.price + prox
+                        atF := true
+    [ceil, flr, atC, atF]
+
+// Nearest level ahead of a price, any timeframe (ceilings for buys, floors for sells)
+f_nextLevel(int side, float from, float minDist) =>
+    float best = na
+    int   bTfc = -1
+    int   n    = lvls.size()
+    if n > 0
+        for i = 0 to n - 1
+            Level lv = lvls.get(i)
+            if not lv.broken and lv.dir == side
+                bool ahead = side == 1 ? lv.price > from + minDist : lv.price < from - minDist
+                bool nearer = na(best) or (side == 1 ? lv.price < best : lv.price > best)
+                if ahead and nearer
+                    best := lv.price
+                    bTfc := lv.tfc
+    [best, bTfc]
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  ② CLEAN ZONES
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+if cf and zNew and not na(zTop) and zDir != 0
+    Zone z = Zone.new(zTop, zBot, zDir, zT0)
+    if zoneOn
+        if glowOn
+            z.gl := box.new(zT0, zTop, time, zBot, xloc = xloc.bar_time, extend = extend.right, border_color = color.new(cIndigo, 86), border_width = 4, bgcolor = color.new(cIndigo, 100))
+        z.bx := box.new(zT0, zTop, time, zBot, xloc = xloc.bar_time, extend = extend.right, border_color = color.new(cIndigo, 45), border_width = 1, border_style = line.style_dashed, bgcolor = color.new(cIndigo, 89), text = zDir == 1 ? "CLEAN ZONE ↑" : "CLEAN ZONE ↓", text_color = color.new(cIndigo, 10), text_size = size.tiny, text_halign = text.align_left, text_valign = zDir == 1 ? text.align_bottom : text.align_top)
+    zones.push(z)
+    while zones.size() > keepZones
+        Zone old = zones.shift()
+        old.killZone()
+
+f_inZone(float px) =>
+    bool ok = false
+    int  n  = zones.size()
+    if n > 0
+        for i = 0 to n - 1
+            Zone z = zones.get(i)
+            if z.active and px >= z.bot and px <= z.top
+                ok := true
+    ok
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  ① STORY · THE 2 CANDLES
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+int dDir       = dOk ? (dC > dO ? 1 : dC < dO ? -1 : 0) : 0
+int hDir       = hOk ? (hC > hO ? 1 : hC < hO ? -1 : 0) : 0
+int storyStair = na(wStair) ? dStair : wStair
+string storyTf = na(wStair) ? "daily" : "weekly"
+
+[dCeil, dFloor, atCeil, atFloor] = f_dailyMap(close, proxAtr * nz(dAtr, atr * 10))
+
+f_resolve(int d, int h, int story, bool atC, bool atF) =>
+    int    b   = 0
+    string why = ""
+    if d != 0 and d == h
+        b   := d
+        why := "2 candles agree"
+    else if tieMode == TIE_SKIP
+        why := "Mixed → stand aside"
+    else if tieMode == TIE_DAILY
+        b   := d
+        why := "Mixed → daily candle wins"
+    else if atC and not atF
+        b   := -1
+        why := "Mixed → at a daily ceiling → SELL"
+    else if atF and not atC
+        b   := 1
+        why := "Mixed → at a daily floor → BUY"
+    else if not na(story) and story != 0
+        b   := story
+        why := "Mixed → " + storyTf + " staircase " + (story == 1 ? "up" : "down")
+    else
+        b   := d != 0 ? d : h
+        why := "Mixed → daily candle (stronger)"
+    [b, why]
+
+[liveBias, liveWhy] = f_resolve(dDir, hDir, storyStair, atCeil, atFloor)
+
+// Pre-session check: did the last 4H candle already run in the bias direction?
+float preRange = hH - hL
+bool  preRan   = hOk and preRange > 0 and math.abs(hC - hO) >= trendBody / 100 * preRange and preRange >= trendSize * nz(hAtr)
+int   preDir   = hC > hO ? 1 : hC < hO ? -1 : 0
+
+// Sessions: the first hour of each
+bool inAsia = f_inSess(ssAsia, tzAsia) and onAsia
+bool inLon  = f_inSess(ssLon, tzLon) and onLon
+bool inNy   = f_inSess(ssNy, tzNy) and onNy
+bool inNyse = f_inSess(ssNyse, tzNyse) and onNyse
+bool inPow  = f_inSess(ssPow, tzPow) and onPow
+int  sessIdx   = inAsia ? 1 : inLon ? 2 : inNy ? 3 : inNyse ? 4 : inPow ? 5 : 0
+bool sessStart = sessIdx != 0 and sessIdx != nz(sessIdx[1])
+
+f_sessName(int i) =>
+    i == 1 ? "Asia" : i == 2 ? "London" : i == 3 ? "New York" : i == 4 ? "NYSE" : i == 5 ? "Power Hour" : "—"
+
+f_biasCol(int b) =>
+    b == 1 ? cBuy : b == -1 ? cSell : cPurple
+
+var int    sBias   = 0
+var string sWhy    = ""
+var int    sD      = 0
+var int    sH      = 0
+var int    sStory  = na
+var int    sMode   = 1          // 1 breakout, 2 pullback
+var float  preHi   = na
+var float  preLo   = na
+var int    sIdx    = 0
+var int    tradesSess = 0
+var bool   blkL    = false
+var bool   blkS    = false
+var array<label> banners = array.new<label>()
+bool evSess = false
+
+if cf and newDay
+    blkL := false
+    blkS := false
+
+if cf and sessStart
+    sBias  := liveBias
+    sWhy   := liveWhy
+    sD     := dDir
+    sH     := hDir
+    sStory := storyStair
+    sMode  := modeOn and preRan and preDir == liveBias and liveBias != 0 ? 2 : 1
+    preHi  := hH
+    preLo  := hL
+    sIdx   := sessIdx
+    tradesSess := 0
+    evSess := true
+    if showBanner
+        color  bc  = f_biasCol(sBias)
+        string arr = sBias == 1 ? "▲ BUY ONLY" : sBias == -1 ? "▼ SELL ONLY" : "■ STAND ASIDE"
+        string ln2 = "D " + (sD == 1 ? "▲" : sD == -1 ? "▼" : "■") + "   4H " + (sH == 1 ? "▲" : sH == -1 ? "▼" : "■") + "   " + (storyTf == "weekly" ? "W " : "D-stair ") + (na(sStory) ? "?" : sStory == 1 ? "▲" : sStory == -1 ? "▼" : "■")
+        string ln3 = sMode == 2 ? "WAIT FOR PULLBACK" : "BREAKOUTS ON"
+        label bl = label.new(time, high + atr * 1.2, str.upper(f_sessName(sIdx)) + "  ·  " + arr + "\n" + ln2 + "\n" + ln3, xloc = xloc.bar_time, style = label.style_label_down, color = color.new(C_PILL, 5), textcolor = bc, size = size.small, tooltip = sWhy)
+        banners.push(bl)
+        while banners.size() > 10
+            label.delete(banners.shift())
+
+// Positioning: pressed against a daily level with the bias pointing into it = done for today
+if cf and sessIdx != 0 and blockCeil
+    if sBias == 1 and atCeil
+        blkL := true
+    if sBias == -1 and atFloor
+        blkS := true
+
+float posPct = not na(dCeil) and not na(dFloor) and dCeil > dFloor ? (close - dFloor) / (dCeil - dFloor) * 100 : na
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  ③ STRAT · THE TRIGGER
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// Range: the last candles before this one, capped by their bodies, with enough opposite candles,
+// and this candle closes OUTSIDE it. The widest valid range wins (bigger range = more liquidity).
+f_findRange(int side, float a) =>
+    float top  = na
+    float bot  = na
+    int   opp  = 0
+    bool  ok   = false
+    float bTop = na
+    float bBot = na
+    int   bK   = 0
+    for k = 1 to maxRangeBars
+        top := na(top) ? math.max(open[k], close[k]) : math.max(top, math.max(open[k], close[k]))
+        bot := na(bot) ? math.min(open[k], close[k]) : math.min(bot, math.min(open[k], close[k]))
+        opp += side == 1 ? (close[k] < open[k] ? 1 : 0) : (close[k] > open[k] ? 1 : 0)
+        float hgt = top - bot
+        if hgt > maxRangeAtr * a
+            break
+        bool outside = side == 1 ? close > top : close < bot
+        if k >= minRangeBars and opp >= minOpp and hgt >= minRangeAtr * a and outside
+            ok   := true
+            bTop := top
+            bBot := bot
+            bK   := k
+    [ok, bTop, bBot, bK]
+
+// Liquidity grab inside the range: a candle dipped under the range's earlier lows and closed back above
+f_liqGrab(int side, int k) =>
+    bool  grab = false
+    float ext  = na
+    if k >= 2
+        for i = k to 1
+            if not na(ext)
+                if side == 1 and low[i] < ext and close[i] > ext
+                    grab := true
+                if side == -1 and high[i] > ext and close[i] < ext
+                    grab := true
+            ext := na(ext) ? (side == 1 ? low[i] : high[i]) : side == 1 ? math.min(ext, low[i]) : math.max(ext, high[i])
+    grab
+
+[okL, topL, botL, kL] = f_findRange(1, atr)
+[okS, topS, botS, kS] = f_findRange(-1, atr)
+bool strongC = cRng > 0 and cBody >= minBodyPct / 100 * cRng
+
+// Setup / trade state
+var int    st       = 0      // 0 looking, 1 stop order working, 2 in a trade
+var int    sd       = 0      // 1 long, -1 short
+var float  rTop     = na
+var float  rBot     = na
+var int    rT0      = na
+var int    rBars    = 0
+var bool   rLiq     = false
+var bool   rZone    = false
+var float  bHi      = na
+var float  bLo      = na
+var int    bBar     = na
+var float  trig     = na
+var bool   wickSeen = false
+var float  eP       = na
+var float  sP       = na
+var float  risk     = na
+var float  r1       = na
+var float  tgt      = na
+var string tgtSrc   = ""
+var float  preLvl   = na
+var int    eBar     = na
+var int    eT       = na
+var bool   beOn     = false
+var bool   partDone = false
+var bool   fastDone = false
+var int    fastCnt  = 0
+var Fx     fxSet    = na
+var Fx     fxTrd    = na
+var array<Fx>    fxAll  = array.new<Fx>()
+var array<label> skips  = array.new<label>()
+var string lastSkip = ""
+
+// Record (this chart's history, no fees)
+var int    nTr      = 0
+var int    nW       = 0
+var int    nL       = 0
+var int    nBE      = 0
+var float  sumR     = 0.0
+var float  grossW   = 0.0
+var float  grossL   = 0.0
+var float  lastR    = na
+var string lastExit = ""
+
+bool   evArm    = false
+bool   evWick   = false
+bool   evEntry  = false
+bool   evBE     = false
+bool   evFast   = false
+bool   evExit   = false
+bool   evCancel = false
+string whyTxt   = ""
+float  exitPx   = na
+float  exitR    = na
+bool   doCancel = false
+bool   doExit   = false
+
+f_skip(string why, float y, color c) =>
+    if showCancels
+        label lb = label.new(time, y, "✕ " + why, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(C_PILL, 20), textcolor = c, size = size.tiny)
+        skips.push(lb)
+        while skips.size() > keepFx
+            label.delete(skips.shift())
+    why
+
+// ── Look for the breakout candle (only inside the first hour, only in the bias direction)
+bool canLook = cf and st == 0 and sessIdx != 0 and sIdx == sessIdx and tradesSess < maxTradesSess and sBias != 0
+if canLook
+    int   side = sBias
+    bool  ok   = side == 1 ? okL and close > open and strongC : okS and close < open and strongC
+    if ok
+        float top   = side == 1 ? topL : topS
+        float bot   = side == 1 ? botL : botS
+        int   k     = side == 1 ? kL : kS
+        float hgt   = top - bot
+        float px    = side == 1 ? high : low
+        float pbLvl = side == 1 ? preHi - pbDepth / 100 * (preHi - preLo) : preLo + pbDepth / 100 * (preHi - preLo)
+        bool  sizeOk = cRng <= maxBreakPct / 100 * hgt
+        bool  pbOk   = sMode != 2 or na(pbLvl) or (side == 1 ? bot <= pbLvl : top >= pbLvl)
+        bool  blkOk  = not (side == 1 ? blkL : blkS)
+        bool  zOk    = not zoneReq or f_inZone(px)
+        float yLbl   = side == 1 ? high + atr * 0.3 : low - atr * 0.3
+        if not blkOk
+            lastSkip := f_skip(side == 1 ? "AT DAILY CEILING · come back tomorrow" : "AT DAILY FLOOR · come back tomorrow", yLbl, cAmber)
+        else if not sizeOk
+            lastSkip := f_skip("breakout candle > " + str.tostring(maxBreakPct, "#") + "% of the range", yLbl, cGrey)
+        else if not pbOk
+            lastSkip := f_skip("pre-session ran · wait for a pullback", yLbl, cGrey)
+        else if not zOk
+            lastSkip := f_skip("no clean zone here", yLbl, cGrey)
+        else
+            st       := 1
+            sd       := side
+            rTop     := top
+            rBot     := bot
+            rBars    := k
+            rT0      := time[k]
+            rLiq     := f_liqGrab(side, k)
+            rZone    := f_inZone(px)
+            bHi      := high
+            bLo      := low
+            bBar     := bar_index
+            trig     := px
+            wickSeen := false
+            evArm    := true
+            lastSkip := ""
+            Fx fx = Fx.new()
+            if showSetups
+                color sc  = side == 1 ? cCyan : cMagenta
+                float pad = atr * 0.08
+                int   hw  = int(barMs * 0.45)
+                if glowOn
+                    fx.b1 := box.new(rT0 - hw, top + pad, time - hw, bot - pad, xloc = xloc.bar_time, border_color = color.new(sc, 84), border_width = 4, bgcolor = color.new(sc, 100))
+                fx.b2 := box.new(rT0 - hw, top, time - hw, bot, xloc = xloc.bar_time, border_color = color.new(sc, 20), border_width = 1, bgcolor = color.new(sc, 87), text = "RANGE · " + str.tostring(k) + " candles" + (rLiq ? " · LIQUIDITY GRAB ✓" : ""), text_color = color.new(sc, 10), text_size = size.tiny, text_halign = text.align_left, text_valign = side == 1 ? text.align_bottom : text.align_top)
+                fx.b3 := box.new(time - hw, high + pad, time + hw, low - pad, xloc = xloc.bar_time, border_color = color.new(sc, 0), border_width = 2, bgcolor = color.new(sc, 80))
+                fx.l1 := line.new(time, trig, time + barMs * maxWait, trig, xloc = xloc.bar_time, color = sc, width = 2, style = line.style_dashed)
+                fx.t1 := label.new(time + barMs * maxWait, trig, (side == 1 ? "BUY STOP  " : "SELL STOP  ") + str.tostring(trig, format.mintick), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(sc, 10), textcolor = #001018, size = size.small)
+                fx.t2 := label.new(time, side == 1 ? low - atr * 0.2 : high + atr * 0.2, "① BREAKOUT", xloc = xloc.bar_time, style = side == 1 ? label.style_label_up : label.style_label_down, color = color.new(C_PILL, 5), textcolor = sc, size = size.tiny)
+            fxSet := fx
+            fxAll.push(fx)
+            f_trimFx(fxAll, keepFx * 2)
+
+// ── Stop order working: wait for the rubber band wick, then the break
+if cf and st == 1 and bar_index > bBar
+    float lw      = sd == 1 ? math.min(open, close) - low : high - math.max(open, close)
+    bool  wickNow = lw >= wickAtr * atr and cRng > 0 and lw >= wickPct / 100 * cRng
+    bool  hit     = sd == 1 ? high >= trig : low <= trig
+    if hit
+        bool dipFirst = wickSeen or (wickNow and (sd == 1 ? open < trig : open > trig))
+        if dipFirst
+            float fillPx = sd == 1 ? math.max(open, trig) : math.min(open, trig)
+            float stp  = sd == 1 ? bLo - bufTicks * syminfo.mintick : bHi + bufTicks * syminfo.mintick
+            float rsk  = math.abs(fillPx - stp)
+            if rsk <= 0
+                doCancel := true
+                whyTxt   := "no room for a stop"
+            else
+                if not wickSeen
+                    evWick := true
+                    if showSetups and not na(fxSet)
+                        fxSet.t3 := label.new(time, sd == 1 ? low - atr * 0.2 : high + atr * 0.2, "② RUBBER BAND ↺", xloc = xloc.bar_time, style = sd == 1 ? label.style_label_up : label.style_label_down, color = color.new(C_PILL, 5), textcolor = cGold, size = size.tiny)
+                st       := 2
+                eP       := fillPx
+                sP       := stp
+                risk     := rsk
+                r1       := fillPx + sd * rsk
+                eBar     := bar_index
+                eT       := time
+                beOn     := false
+                partDone := false
+                fastDone := false
+                fastCnt  := 0
+                tradesSess += 1
+                evEntry  := true
+                // Targets: the first level beyond 1R (capped), and any level before 1R moves the stop to breakeven
+                [nl, nlTfc]   = f_nextLevel(sd, fillPx, rsk * 0.05)
+                [far, farTfc] = f_nextLevel(sd, r1 - sd * rsk * 0.02, 0)
+                float capPx = fillPx + sd * maxR * rsk
+                if exitPlan == EX_1R
+                    tgt    := r1
+                    tgtSrc := "1:1"
+                else if na(far) or (sd == 1 ? far > capPx : far < capPx)
+                    tgt    := capPx
+                    tgtSrc := str.tostring(maxR, "#.#") + "R cap · open space"
+                else
+                    tgt    := far
+                    tgtSrc := f_lvlTfName(farTfc) + (sd == 1 ? " ceiling" : " floor")
+                preLvl := not na(nl) and (sd == 1 ? nl < r1 : nl > r1) ? nl : na
+                Fx fx = Fx.new()
+                if showTrades
+                    color ec = sd == 1 ? cBuy : cSell
+                    int   x1 = time + barMs * 8
+                    fx.b1 := box.new(time, eP, x1, sP, xloc = xloc.bar_time, border_color = color.new(cSell, 60), border_width = 1, bgcolor = color.new(cSell, 85))
+                    fx.b2 := box.new(time, tgt, x1, eP, xloc = xloc.bar_time, border_color = color.new(cBuy, 60), border_width = 1, bgcolor = color.new(cBuy, 87))
+                    fx.l1 := line.new(time, r1, x1, r1, xloc = xloc.bar_time, color = color.new(cGold, 10), width = 1, style = line.style_dotted)
+                    fx.t1 := label.new(time, sd == 1 ? low - atr * 0.25 : high + atr * 0.25, "③ ENTRY " + (sd == 1 ? "▲ " : "▼ ") + str.tostring(eP, format.mintick), xloc = xloc.bar_time, style = sd == 1 ? label.style_label_up : label.style_label_down, color = color.new(ec, 5), textcolor = #001018, size = size.small)
+                    fx.t2 := label.new(x1, tgt, "TARGET · " + tgtSrc, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(C_PILL, 10), textcolor = cBuy, size = size.tiny)
+                    fx.t3 := label.new(x1, r1, "1R → BREAKEVEN", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(C_PILL, 10), textcolor = cGold, size = size.tiny)
+                fxTrd := fx
+                fxAll.push(fx)
+                f_trimFx(fxAll, keepFx * 2)
+                if showSetups and not na(fxSet)
+                    line.set_x2(fxSet.l1, time)
+                // Same candle closes through the stop: out at the stop
+                if sd == 1 ? close <= sP : close >= sP
+                    doExit := true
+                    exitPx := sP
+                    whyTxt := "Stopped"
+        else
+            doCancel := true
+            whyTxt   := "nipple wick · broke with no dip first"
+    else
+        if wickNow and not wickSeen
+            wickSeen := true
+            evWick   := true
+            if showSetups and not na(fxSet)
+                fxSet.t3 := label.new(time, sd == 1 ? low - atr * 0.2 : high + atr * 0.2, "② RUBBER BAND ↺", xloc = xloc.bar_time, style = sd == 1 ? label.style_label_up : label.style_label_down, color = color.new(C_PILL, 5), textcolor = cGold, size = size.tiny)
+        if sd == 1 ? close < rTop : close > rBot
+            doCancel := true
+            whyTxt   := "closed back inside the range"
+        else if bar_index - bBar >= maxWait
+            doCancel := true
+            whyTxt   := "stop order expired"
+
+if doCancel
+    st       := 0
+    evCancel := true
+    lastSkip := whyTxt
+    if not na(fxSet) and showSetups
+        if showCancels
+            line.set_x2(fxSet.l1, time)
+            line.set_color(fxSet.l1, color.new(cGrey, 30))
+            box.set_bgcolor(fxSet.b2, color.new(cGrey, 90))
+            box.set_border_color(fxSet.b2, color.new(cGrey, 50))
+            box.set_text_color(fxSet.b2, cGrey)
+            box.set_bgcolor(fxSet.b3, color.new(cGrey, 85))
+            box.set_border_color(fxSet.b3, color.new(cGrey, 40))
+            label.set_color(fxSet.t1, color.new(cGrey, 40))
+            label.set_text(fxSet.t1, "✕ " + whyTxt)
+            label.set_textcolor(fxSet.t1, color.white)
+            if not na(fxSet.b1)
+                box.delete(fxSet.b1)
+        else
+            fxSet.killFx()
+
+// ── In a trade: stop, 1R → breakeven, next level, too fast, time
+if cf and st == 2 and bar_index > eBar
+    bool stopped = sd == 1 ? low <= sP : high >= sP
+    if stopped
+        doExit := true
+        exitPx := sd == 1 ? math.min(open, sP) : math.max(open, sP)
+        whyTxt := beOn ? (partDone and partPct > 0 and exitPlan == EX_LEVEL ? "rest out at breakeven · " + str.tostring(partPct, "#") + "% banked at 1R" : "Breakeven") : "Stopped"
+    else
+        if not partDone and (sd == 1 ? high >= r1 : low <= r1)
+            if exitPlan == EX_1R
+                doExit := true
+                exitPx := r1
+                whyTxt := "1:1 target"
+            else
+                partDone := true
+                if not beOn
+                    beOn := true
+                    sP   := eP
+                    evBE := true
+        if not doExit and not beOn and not na(preLvl) and (sd == 1 ? high >= preLvl : low <= preLvl)
+            beOn := true
+            sP   := eP
+            evBE := true
+        if not doExit and (sd == 1 ? high >= tgt : low <= tgt)
+            doExit := true
+            exitPx := tgt
+            whyTxt := "Target · " + tgtSrc
+        if not doExit
+            fastCnt := (sd == 1 ? close > open and close > close[1] : close < open and close < close[1]) ? fastCnt + 1 : 0
+            float rNow = (close - eP) * sd / risk
+            if fastOn and not fastDone and rNow >= fastR and fastCnt >= fastBars
+                fastDone := true
+                evFast   := true
+                if showTrades
+                    label.new(time, sd == 1 ? high + atr * 0.3 : low - atr * 0.3, "⚡ TOO FAST · TAKE PROFIT", xloc = xloc.bar_time, style = sd == 1 ? label.style_label_down : label.style_label_up, color = color.new(cAmber, 5), textcolor = #1A0E00, size = size.small)
+                if fastExit
+                    doExit := true
+                    exitPx := close
+                    whyTxt := "Too fast · took profit"
+        if not doExit and maxHoldMin > 0 and time_close - eT >= maxHoldMin * 60000
+            doExit := true
+            exitPx := close
+            whyTxt := "Time exit"
+    if showTrades and not na(fxTrd) and not doExit
+        int x1 = time + barMs * 2
+        box.set_right(fxTrd.b1, x1)
+        box.set_right(fxTrd.b2, x1)
+        line.set_x2(fxTrd.l1, x1)
+        label.set_x(fxTrd.t2, x1)
+        label.set_x(fxTrd.t3, x1)
+        if evBE
+            label.set_text(fxTrd.t3, "✓ STOP AT BREAKEVEN")
+            label.new(time, sd == 1 ? high + atr * 0.25 : low - atr * 0.25, "🛡 RISK FREE", xloc = xloc.bar_time, style = sd == 1 ? label.style_label_down : label.style_label_up, color = color.new(cGold, 10), textcolor = #1A1200, size = size.tiny)
+
+if doExit
+    bool  usePart = partDone and partPct > 0 and exitPlan == EX_LEVEL
+    float partial = usePart ? partPct / 100 : 0.0
+    float remain  = usePart ? 1 - partPct / 100 : 1.0
+    exitR    := partial + remain * (exitPx - eP) * sd / risk
+    nTr      += 1
+    sumR     += exitR
+    if exitR > 0.05
+        nW     += 1
+        grossW += exitR
+    else if exitR < -0.05
+        nL     += 1
+        grossL += -exitR
+    else
+        nBE    += 1
+    lastR    := exitR
+    lastExit := whyTxt
+    st       := 0
+    evExit   := true
+    if showTrades and not na(fxTrd)
+        box.set_right(fxTrd.b1, time)
+        box.set_right(fxTrd.b2, time)
+        line.set_x2(fxTrd.l1, time)
+        label.set_x(fxTrd.t2, time)
+        label.set_x(fxTrd.t3, time)
+        color oc = exitR > 0.05 ? cBuy : exitR < -0.05 ? cSell : cGold
+        fxTrd.t4 := label.new(time, sd == 1 ? high + atr * 0.4 : low - atr * 0.4, (exitR > 0.05 ? "✓ " : exitR < -0.05 ? "✕ " : "● ") + f_signed(exitR, "0.0") + "R  ·  " + whyTxt, xloc = xloc.bar_time, style = sd == 1 ? label.style_label_down : label.style_label_up, color = color.new(oc, 5), textcolor = #000814, size = size.small)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  ✨ VISUALS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// Bias aura: visual only, never part of the signal
+float aCore = ta.ema(hlc3, auraLen)
+float aEnv  = ta.atr(auraLen) * auraWidth
+int   aBias = sessIdx != 0 or st != 0 ? sBias : liveBias
+color aCol  = f_biasCol(aBias)
+int   upT   = aBias == 1 ? 70 : aBias == -1 ? 93 : 84
+int   dnT   = aBias == -1 ? 70 : aBias == 1 ? 93 : 84
+
+plot(showAura and glowOn ? aCore : na, "Aura · core glow", color = color.new(aCol, 80), linewidth = 7, display = display.pane)
+pCore = plot(showAura ? aCore : na, "Aura · core", color = color.new(aCol, 5), linewidth = 2, display = display.pane)
+pUpO  = plot(showAura ? aCore + aEnv : na, "Aura · buyers wave", color = color.new(cCyan, 40), linewidth = 1, display = display.pane)
+pUpI  = plot(showAura ? aCore + aEnv * 0.5 : na, "Aura · buyers inner", color = color.new(cCyan, 75), linewidth = 1, display = display.pane)
+pDnI  = plot(showAura ? aCore - aEnv * 0.5 : na, "Aura · sellers inner", color = color.new(cPurple, 75), linewidth = 1, display = display.pane)
+pDnO  = plot(showAura ? aCore - aEnv : na, "Aura · sellers wave", color = color.new(cPurple, 40), linewidth = 1, display = display.pane)
+fill(pUpO, pCore, aCore + aEnv, aCore, color.new(cCyan, upT), color.new(cCyan, 97), title = "Aura · buyers fill")
+fill(pCore, pDnO, aCore, aCore - aEnv, color.new(cPurple, 97), color.new(cPurple, dnT), title = "Aura · sellers fill")
+
+bgcolor(tintWindow and sessIdx != 0 ? color.new(f_biasCol(sBias), 93) : na, title = "Trading window")
+
+color evCol = na
+if colorEvents
+    if evEntry
+        evCol := sd == 1 ? cBuy : cSell
+    else if evArm
+        evCol := sd == 1 ? cCyan : cMagenta
+    else if evWick
+        evCol := cGold
+color tintCol = biasCandles ? (aBias == 1 ? color.new(cBuy, 45) : aBias == -1 ? color.new(cSell, 45) : color.new(cPurple, 45)) : na
+barcolor(not na(evCol) ? evCol : tintCol, title = "Setup candles")
+
+// Data window values (handy for bots and debugging)
+plot(sBias, "Session bias (1 buy · -1 sell · 0 none)", display = display.data_window)
+plot(st, "State (0 looking · 1 stop order · 2 in trade)", display = display.data_window)
+plot(st == 2 ? sd : 0, "Trade side (1 long · -1 short · 0 flat)", display = display.data_window)
+
+alertcondition(evArm, "MATH: stop order placed", "Mathematical Indicator: stop order placed on {{ticker}} ({{interval}})")
+alertcondition(evEntry, "MATH: entry", "Mathematical Indicator: ENTRY on {{ticker}} ({{interval}}) at {{close}}")
+alertcondition(evExit, "MATH: trade closed", "Mathematical Indicator: trade closed on {{ticker}} ({{interval}}) at {{close}}")
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  🤖 24/7 BOT · JSON ALERTS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+f_json(string ev, string status) =>
+    float  buf  = bufTicks * syminfo.mintick
+    float  oNow = st == 2 and risk > 0 ? (close - eP) * sd / risk : na
+    float  wr   = nTr > 0 ? float(nW) / nTr * 100 : na
+    string j = "{\"source\":\"mathematical-indicator\",\"version\":\"1.0\""
+    j += ",\"event\":\"" + ev + "\",\"tag\":\"" + botTag + "\""
+    j += ",\"symbol\":\"" + syminfo.ticker + "\",\"exchange\":\"" + syminfo.prefix + "\",\"timeframe\":\"" + timeframe.period + "\""
+    j += ",\"time\":\"" + str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC") + "\",\"price\":" + f_num(close)
+    j += ",\"session\":{\"name\":\"" + f_sessName(sIdx) + "\",\"live\":" + f_bool(sessIdx != 0) + ",\"trades\":" + str.tostring(tradesSess) + ",\"max_trades\":" + str.tostring(maxTradesSess) + "}"
+    j += ",\"story\":{\"bias\":\"" + f_biasWord(sBias) + "\",\"daily_candle\":\"" + f_dirWord(sD) + "\",\"h4_candle\":\"" + f_dirWord(sH) + "\",\"staircase\":\"" + f_stairKey(sStory) + "\",\"staircase_tf\":\"" + storyTf + "\",\"reason\":\"" + sWhy + "\"}"
+    j += ",\"zone\":{\"mode\":\"" + (sMode == 2 ? "PULLBACK" : "BREAKOUT") + "\",\"daily_ceiling\":" + f_num(dCeil) + ",\"daily_floor\":" + f_num(dFloor) + ",\"position_pct\":" + (na(posPct) ? "null" : str.tostring(posPct, "0.0")) + ",\"at_daily_ceiling\":" + f_bool(atCeil) + ",\"at_daily_floor\":" + f_bool(atFloor) + ",\"blocked_today\":" + f_bool(sBias == 1 ? blkL : sBias == -1 ? blkS : false) + ",\"in_clean_zone\":" + f_bool(f_inZone(close)) + "}"
+    j += ",\"setup\":{\"side\":\"" + (sd == 1 ? "LONG" : sd == -1 ? "SHORT" : "NONE") + "\",\"range_top\":" + f_num(rTop) + ",\"range_bottom\":" + f_num(rBot) + ",\"range_candles\":" + str.tostring(rBars) + ",\"liquidity_grab\":" + f_bool(rLiq) + ",\"in_clean_zone\":" + f_bool(rZone) + ",\"breakout_high\":" + f_num(bHi) + ",\"breakout_low\":" + f_num(bLo) + ",\"rubber_band\":" + f_bool(wickSeen or evWick) + "}"
+    j += ",\"order\":{\"type\":\"STOP\",\"action\":\"" + (sd == 1 ? "BUY" : "SELL") + "\",\"price\":" + f_num(trig) + ",\"stop_loss\":" + f_num(sd == 1 ? bLo - buf : bHi + buf) + ",\"cancel_after_candles\":" + str.tostring(maxWait) + "}"
+    j += ",\"trade\":{\"status\":\"" + status + "\",\"entry\":" + f_num(eP) + ",\"stop\":" + f_num(sP) + ",\"risk_per_unit\":" + f_num(risk) + ",\"take_profit_1r\":" + f_num(r1) + ",\"target\":" + f_num(tgt) + ",\"target_source\":\"" + tgtSrc + "\",\"breakeven\":" + f_bool(beOn) + ",\"close_pct_at_1r\":" + str.tostring(exitPlan == EX_LEVEL ? partPct : 0, "#") + ",\"open_r\":" + (na(oNow) ? "null" : str.tostring(oNow, "0.00")) + ",\"exit_price\":" + (ev == "EXIT" ? f_num(exitPx) : "null") + ",\"result_r\":" + (ev == "EXIT" and not na(exitR) ? str.tostring(exitR, "0.00") : "null") + ",\"note\":\"" + (ev == "EXIT" or ev == "STOP_ORDER_CANCELLED" ? whyTxt : "") + "\"}"
+    j += ",\"record\":{\"trades\":" + str.tostring(nTr) + ",\"wins\":" + str.tostring(nW) + ",\"breakeven\":" + str.tostring(nBE) + ",\"losses\":" + str.tostring(nL) + ",\"win_rate\":" + (na(wr) ? "null" : str.tostring(wr, "0.0")) + ",\"net_r\":" + str.tostring(sumR, "0.00") + ",\"note\":\"this chart's history, no fees\"}"
+    j += "}"
+    j
+
+if cf and botMode != "Off"
+    if evSess
+        alert(f_json("SESSION_BIAS", st == 2 ? "OPEN" : "FLAT"), alert.freq_all)
+    if evArm
+        alert(f_json("STOP_ORDER_PLACED", "ORDER_WORKING"), alert.freq_all)
+    if evCancel
+        alert(f_json("STOP_ORDER_CANCELLED", "CANCELLED"), alert.freq_all)
+    if evEntry
+        alert(f_json("ENTRY", "OPEN"), alert.freq_all)
+    if evBE
+        alert(f_json("BREAKEVEN", "OPEN"), alert.freq_all)
+    if evFast
+        alert(f_json("TOO_FAST_TAKE_PROFIT", st == 2 ? "OPEN" : "CLOSED"), alert.freq_all)
+    if evExit
+        alert(f_json("EXIT", "CLOSED"), alert.freq_all)
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  📊 DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+string D_SIZE  = f_size(panelSizeIn)
+string D_TITLE = panelSizeIn == "Tiny" ? size.small : panelSizeIn == "Small" ? size.normal : size.large
+int    D_ROWS  = 46
+var table dash = table.new(f_pos(panelPosIn), 3, D_ROWS, bgcolor = color.new(D_ROW, 6), frame_color = color.new(cCyan, 35), frame_width = 1, border_color = color.new(cCyan, 82), border_width = 1)
+
+f_tc(int c, int r, string txt, color tc, color bg, string ha) =>
+    table.cell(dash, c, r, txt, text_color = tc, bgcolor = bg, text_halign = ha, text_size = D_SIZE)
+
+f_span(int r, string txt, color tc, color bg, string sz) =>
+    table.cell(dash, 0, r, txt, text_color = tc, bgcolor = bg, text_halign = text.align_center, text_size = sz)
+    table.cell(dash, 1, r, "", bgcolor = bg, text_size = sz)
+    table.cell(dash, 2, r, "", bgcolor = bg, text_size = sz)
+    table.merge_cells(dash, 0, r, 2, r)
+
+f_head(int r, string txt) =>
+    table.cell(dash, 0, r, txt, text_color = cGold, bgcolor = D_SEC, text_halign = text.align_left, text_size = D_SIZE)
+    table.cell(dash, 1, r, "", bgcolor = D_SEC, text_size = D_SIZE)
+    table.cell(dash, 2, r, "", bgcolor = D_SEC, text_size = D_SIZE)
+    table.merge_cells(dash, 0, r, 2, r)
+
+f_kv(int r, string k, string v, color vc) =>
+    f_tc(0, r, k, cSilver, D_ROW, text.align_left)
+    f_tc(1, r, v, vc, D_ROW, text.align_left)
+    f_tc(2, r, "", vc, D_ROW, text.align_left)
+    table.merge_cells(dash, 1, r, 2, r)
+
+// Key | value | light (1 ✔ · 0 ◐ · -1 ✕)
+f_kvs(int r, string k, string v, color vc, int lt) =>
+    f_tc(0, r, k, cSilver, D_ROW, text.align_left)
+    f_tc(1, r, v, vc, D_ROW, text.align_left)
+    f_tc(2, r, lt == 1 ? "✔" : lt == 0 ? "◐" : "✕", lt == 1 ? cBuy : lt == 0 ? cAmber : cGrey, D_ROW, text.align_center)
+
+f_meterRow(int r, string k, float pct, string v, color c) =>
+    f_tc(0, r, k, cSilver, D_ROW, text.align_left)
+    f_tc(1, r, f_meter(pct, 10), c, D_ROW, text.align_left)
+    f_tc(2, r, v, c, D_ROW, text.align_right)
+
+// Solid status cell
+f_big(int r, string k, string v, color c) =>
+    f_tc(0, r, k, cSilver, D_ROW, text.align_left)
+    f_tc(1, r, v, #000814, color.new(c, 5), text.align_center)
+    f_tc(2, r, "", #000814, color.new(c, 5), text.align_center)
+    table.merge_cells(dash, 1, r, 2, r)
+
+f_arrowTxt(int d, string up, string dn, string flat) =>
+    d == 1 ? up : d == -1 ? dn : flat
+
+if showPanel and barstate.islast
+    table.clear(dash, 0, 0, 2, D_ROWS - 1)
+    bool   full   = panelModeIn == "Full"
+    string fp     = format.mintick
+    bool   live   = sessIdx != 0 or st != 0
+    int    vB     = live ? sBias : liveBias
+    int    vD     = live ? sD : dDir
+    int    vH     = live ? sH : hDir
+    int    vS     = live ? sStory : storyStair
+    string vWhy   = live ? sWhy : liveWhy
+    int    vMode  = live ? sMode : (modeOn and preRan and preDir == liveBias and liveBias != 0 ? 2 : 1)
+    bool   vBlk   = vB == 1 ? blkL : vB == -1 ? blkS : false
+    bool   zNow   = f_inZone(close)
+    color  bCol   = f_biasCol(vB)
+
+    int r = 0
+    f_span(r, "◆ THE MATHEMATICAL INDICATOR", cCyan, D_HEAD, D_TITLE)
+    r += 1
+    f_span(r, "STORY  ·  ZONE  ·  STRAT", cSilver, D_HEAD, D_SIZE)
+    r += 1
+    f_tc(0, r, "Market", cSilver, D_ROW, text.align_left)
+    f_tc(1, r, syminfo.ticker, cCyan, D_ROW, text.align_left)
+    f_tc(2, r, "TF " + f_tfLabel(timeframe.period), cCyan, D_ROW, text.align_right)
+    r += 1
+    f_kv(r, "Session", sessIdx != 0 ? "● " + f_sessName(sessIdx) + " · LIVE (first hour)" : "○ Waiting for the next session", sessIdx != 0 ? cBuy : cGrey)
+    r += 1
+    if timeframe.in_seconds() >= 3600
+        f_span(r, "⚠ Built for 5–15 minute charts", cAmber, D_ROW, D_SIZE)
+        r += 1
+
+    // ① STORY
+    f_head(r, "① STORY · THE 2 CANDLES" + (live ? "" : "   (next session)"))
+    r += 1
+    f_kvs(r, "Yesterday", f_arrowTxt(vD, "▲ Green", "▼ Red", "■ Flat"), f_biasCol(vD), vD == 0 ? -1 : vD == vB ? 1 : 0)
+    r += 1
+    f_kvs(r, "Last 4H candle", f_arrowTxt(vH, "▲ Green", "▼ Red", "■ Flat"), f_biasCol(vH), vH == 0 ? -1 : vH == vB ? 1 : 0)
+    r += 1
+    if full
+        f_kvs(r, (storyTf == "weekly" ? "Weekly" : "Daily") + " story", f_stairWord(vS), na(vS) ? cGrey : f_biasCol(vS), na(vS) or vS == 0 ? -1 : vS == vB ? 1 : 0)
+        r += 1
+    f_big(r, "BIAS", vB == 1 ? "▲  BUY ONLY" : vB == -1 ? "▼  SELL ONLY" : "■  STAND ASIDE", bCol)
+    r += 1
+    f_kv(r, "Why", vWhy, cSilver)
+    r += 1
+
+    // ② ZONE
+    f_head(r, "② ZONE · WHERE TO TRADE")
+    r += 1
+    string posWord = na(posPct) ? "n/a" : str.tostring(posPct, "0") + "%" + (posPct < 33 ? " low" : posPct > 67 ? " high" : " mid")
+    color  posCol  = na(posPct) ? cGrey : vB == 1 ? (posPct > 80 ? cAmber : cBuy) : vB == -1 ? (posPct < 20 ? cAmber : cSell) : cPurple
+    f_meterRow(r, "Positioning", posPct, posWord, posCol)
+    r += 1
+    if full
+        f_kv(r, "Daily ceiling", na(dCeil) ? "—" : str.tostring(dCeil, fp) + "   " + f_signed((dCeil - close) / close * 100, "0.00") + "%", cGold)
+        r += 1
+        f_kv(r, "Daily floor", na(dFloor) ? "—" : str.tostring(dFloor, fp) + "   " + f_signed((dFloor - close) / close * 100, "0.00") + "%", cGold)
+        r += 1
+        f_kvs(r, "Clean zone", zNow ? "Inside one" : "Not inside one", zNow ? cIndigo : cGrey, zNow ? 1 : zoneReq ? -1 : 0)
+        r += 1
+        f_kv(r, "Pre-session 4H", preRan ? (preDir == 1 ? "Ran up" : "Ran down") : "Ranged", preRan ? f_biasCol(preDir) : cSilver)
+        r += 1
+    f_kv(r, "Mode", vMode == 2 ? "WAIT FOR A PULLBACK" : "BREAKOUTS ON", vMode == 2 ? cAmber : cCyan)
+    r += 1
+    f_kvs(r, "Today", vBlk ? (vB == 1 ? "⛔ At a daily ceiling · come back tomorrow" : "⛔ At a daily floor · come back tomorrow") : vB == 0 ? "No direction" : "Open for trades", vBlk ? cAmber : vB == 0 ? cGrey : cBuy, vBlk or vB == 0 ? -1 : 1)
+    r += 1
+
+    // ③ STRAT
+    f_head(r, "③ STRAT · THE TRIGGER")
+    r += 1
+    bool armedOrIn = st >= 1
+    f_kvs(r, "Range", armedOrIn ? str.tostring(rBars) + " candles" + (rLiq ? " · liquidity grab" : "") : "waiting", armedOrIn ? cCyan : cGrey, armedOrIn ? 1 : -1)
+    r += 1
+    f_kvs(r, "Breakout candle", armedOrIn ? "closed outside the range" : "—", armedOrIn ? cCyan : cGrey, armedOrIn ? 1 : -1)
+    r += 1
+    bool wk = st == 2 or (st == 1 and wickSeen)
+    f_kvs(r, "Rubber band wick", wk ? "seen" : st == 1 ? "waiting for the dip" : "—", wk ? cGold : st == 1 ? cAmber : cGrey, wk ? 1 : st == 1 ? 0 : -1)
+    r += 1
+    f_kvs(r, "Entry", st == 2 ? (sd == 1 ? "▲ " : "▼ ") + str.tostring(eP, fp) : st == 1 ? (sd == 1 ? "buy stop " : "sell stop ") + str.tostring(trig, fp) : "—", st == 2 ? f_biasCol(sd) : st == 1 ? cCyan : cGrey, st == 2 ? 1 : st == 1 ? 0 : -1)
+    r += 1
+
+    string stTxt = "LOOKING FOR A RANGE"
+    color  stCol = cCyan
+    string nxt   = vB == 1 ? "Range with 2+ red candles, then a strong close above" : "Range with 2+ green candles, then a strong close below"
+    if st == 2
+        stTxt := sd == 1 ? "▲  LONG ACTIVE" : "▼  SHORT ACTIVE"
+        stCol := f_biasCol(sd)
+        nxt   := beOn ? "Risk free · riding to " + str.tostring(tgt, fp) : "Stop to breakeven at " + str.tostring(r1, fp) + " (1R)"
+    else if st == 1
+        stTxt := sd == 1 ? "◆  BUY STOP WORKING" : "◆  SELL STOP WORKING"
+        stCol := sd == 1 ? cCyan : cMagenta
+        nxt   := wickSeen ? "Dip done · waiting for the break of " + str.tostring(trig, fp) : "Need a dip (wick) before price breaks " + str.tostring(trig, fp)
+    else if sessIdx == 0
+        stTxt := "OUTSIDE THE FIRST HOUR"
+        stCol := cGrey
+        nxt   := "Sleeps until the next session opens"
+    else if vB == 0
+        stTxt := "■  STAND ASIDE"
+        stCol := cPurple
+        nxt   := "No direction today"
+    else if vBlk
+        stTxt := "⛔  COME BACK TOMORROW"
+        stCol := cAmber
+        nxt   := "Only a daily close can break a daily level"
+    else if tradesSess >= maxTradesSess
+        stTxt := "DONE FOR THIS SESSION"
+        stCol := cGrey
+        nxt   := "Max " + str.tostring(maxTradesSess) + " trades reached"
+    f_big(r, "State", stTxt, stCol)
+    r += 1
+    f_kv(r, "Next", nxt, cSilver)
+    r += 1
+    if full and st == 0 and lastSkip != ""
+        f_kv(r, "Last skip", lastSkip, cGrey)
+        r += 1
+
+    if st == 2
+        float rNow = risk > 0 ? (close - eP) * sd / risk : na
+        float tgtR = risk > 0 ? math.abs(tgt - eP) / risk : na
+        f_head(r, "ACTIVE TRADE")
+        r += 1
+        f_kv(r, "Stop", str.tostring(sP, fp) + (beOn ? "  ·  breakeven" : ""), beOn ? cGold : cSell)
+        r += 1
+        f_kv(r, "1R", str.tostring(r1, fp) + (partDone and exitPlan == EX_LEVEL and partPct > 0 ? "  ·  " + str.tostring(partPct, "#") + "% banked" : ""), cGold)
+        r += 1
+        f_kv(r, "Target", str.tostring(tgt, fp) + "  ·  " + str.tostring(tgtR, "0.0") + "R  ·  " + tgtSrc, cBuy)
+        r += 1
+        f_meterRow(r, "Open P&L", na(rNow) or na(tgtR) or tgtR == 0 ? 0 : math.max(rNow, 0) / tgtR * 100, f_signed(rNow, "0.00") + "R", na(rNow) ? cGrey : rNow >= 0 ? cBuy : cSell)
+        r += 1
+    else if full and not na(lastR)
+        f_kv(r, "Last trade", f_signed(lastR, "0.0") + "R  ·  " + lastExit, lastR > 0.05 ? cBuy : lastR < -0.05 ? cSell : cGold)
+        r += 1
+
+    if showRecord and full
+        float wr = nTr > 0 ? float(nW) / nTr * 100 : na
+        f_head(r, "ON-CHART RECORD")
+        r += 1
+        f_kv(r, "Trades", str.tostring(nTr) + "   ·   " + str.tostring(nW) + " W  ·  " + str.tostring(nBE) + " BE  ·  " + str.tostring(nL) + " L", cSilver)
+        r += 1
+        f_meterRow(r, "Win rate", wr, na(wr) ? "—" : str.tostring(wr, "0") + "%", na(wr) ? cGrey : wr >= 50 ? cBuy : cAmber)
+        r += 1
+        f_kv(r, "Net result", nTr > 0 ? f_signed(sumR, "0.0") + "R   ·   avg " + f_signed(sumR / nTr, "0.00") + "R" : "—", sumR >= 0 ? cBuy : cSell)
+        r += 1
+        f_kv(r, "Profit factor", grossL > 0 ? str.tostring(grossW / grossL, "0.00") : nW > 0 ? "no losses yet" : "—", grossL > 0 and grossW / grossL >= 1 ? cBuy : cSilver)
+        r += 1
+
+    f_span(r, "Record = this chart's history · no fees · not financial advice", cGrey, D_HEAD, D_SIZE)
