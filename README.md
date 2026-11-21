@@ -2,7 +2,7 @@
 
 **A free TradingView indicator that runs a complete session-trading strategy and sends every step to your AI agent as clean JSON.**
 
-Two candles pick the direction. Floors and ceilings sit on candle bodies. Trades only happen in the first hour of a session, inside clean zones, after a range, a strong breakout candle and one dip back. The indicator draws all of it on your chart, and your AI agent reads every step and tells you TAKE, WAIT or SKIP.
+Two candles pick the direction. Floors and ceilings sit on candle bodies. Trades only happen in the first hour of a session, inside clean zones, after a range, a strong breakout candle and one dip back. The indicator draws all of it on your chart, and your AI agent reads every step and tells you TAKE, WAIT or SKIP
 
 It works with any agent. It's built to shine with long-horizon reasoning models like **Claude Fable 5.2**.
 
