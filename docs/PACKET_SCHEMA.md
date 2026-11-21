@@ -135,3 +135,5 @@ The indicator's own record on this chart's history. No fees, commissions or slip
 | `win_rate` | number or null | wins / trades × 100 |
 | `net_r` | number | Sum of all results in R |
 | `note` | string | Always `this chart's history, no fees` |
+
+<!-- Maintained by repo owner -->
