@@ -89,3 +89,5 @@ Input: [`examples/sample_packet.json`](../examples/sample_packet.json)
 Output: [`examples/sample_signal.json`](../examples/sample_signal.json)
 
 Both files are illustrative examples, not live market data or a real trade.
+
+<!-- Maintained by repo owner -->
