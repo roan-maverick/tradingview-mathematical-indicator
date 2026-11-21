@@ -251,3 +251,5 @@ Counts every closed trade on the loaded history: trades, wins, breakeven, losses
 - `alert()` sends the JSON packet described in [PACKET_SCHEMA.md](PACKET_SCHEMA.md) with `alert.freq_all`, only on closed candles.
 - Three `alertcondition()` entries exist for simple notifications: stop order placed, entry, trade closed.
 - Data Window values: session bias, state (0 looking, 1 stop order, 2 in trade), trade side.
+
+<!-- Maintained by repo owner -->
