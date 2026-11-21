@@ -8,6 +8,8 @@ It works with any agent. It's built to shine with long-horizon reasoning models 
 
 Open source · MIT license · Pine Script v6 · No repainting
 
+![Live setup: TradingView Mathematical Indicator with webhook receiver and agent](docs/images/live-setup.jpg)
+
 ---
 
 ## The strategy in 3 steps
@@ -291,3 +293,5 @@ This project is for education and research. It is not financial advice. The indi
 ## License
 
 MIT. Use it, fork it, build on it.
+
+<!-- Maintained by repo owner -->
